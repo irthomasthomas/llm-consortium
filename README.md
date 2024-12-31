@@ -84,7 +84,7 @@ llm consortium "Your complex query" \
   --models claude-3-sonnet-20240229 \
   --models gpt-4 \
   --models gemini-pro \
-  --arbiter-model claude-3-opus-20240229 \
+  --arbiter claude-3-opus-20240229 \
   --confidence-threshold 0.8 \
   --max-iterations 3 \
   --output results.json
@@ -121,7 +121,7 @@ orchestrator = ConsortiumOrchestrator(
     models=["claude-3-opus-20240229", "gpt-4", "gemini-pro"],
     confidence_threshold=0.8,
     max_iterations=3,
-    arbiter_model="claude-3-opus-20240229"
+    arbiter="claude-3-opus-20240229"
 )
 
 result = await orchestrator.orchestrate("Your prompt")
