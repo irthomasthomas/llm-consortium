@@ -224,9 +224,7 @@ class ConsortiumOrchestrator:
     <instruction>{prompt}</instruction>
 </prompt>"""
             response = llm.get_model(model).prompt(xml_prompt, system=self.system_prompt)
-
-            # Await the text from the response.
-            text = await response.text()
+            text = response.text()
             asyncio.create_task(log_response(response, model))
 
             return {
@@ -336,16 +334,16 @@ Please provide an improved response that addresses any issues identified in the 
 
         # Print raw arbiter response
         click.echo("\nArbiter Response:\n")
-        click.echo(await arbiter_response.text())
+        click.echo(arbiter_response.text())
         click.echo("\n---\n")
 
 
         try:
-            return self._parse_arbiter_response(await arbiter_response.text())
+            return self._parse_arbiter_response(arbiter_response.text())
         except Exception as e:
             logger.error(f"Error parsing arbiter response: {e}")
             return {
-                "synthesis": await arbiter_response.text(),
+                "synthesis": arbiter_response.text(),
                 "confidence": 0.5,
                 "analysis": "Parsing failed - see raw response",
                 "dissent": "",
