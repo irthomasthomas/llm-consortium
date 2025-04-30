@@ -86,9 +86,9 @@ This command will:
 Advanced example:
 ```bash
 llm consortium "Your complex query" \
-  --m o3-mini -n 1 \
-  --m gpt-4o -n 2 \
-  --m gemini-2 -n 3 \
+  -m o3-mini -n 1 \
+  -m gpt-4o -n 2 \
+  -m gemini-2 -n 3 \
   --arbiter gemini-2 \
   --confidence-threshold 1 \
   --max-iterations 4 \
