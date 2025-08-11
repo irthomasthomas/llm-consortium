@@ -173,7 +173,6 @@ class ConsortiumConfig(BaseModel):
 class ConsortiumOrchestrator:
     def __init__(self, config: ConsortiumConfig):
         self.models = config.models
-        # Store system_prompt from config
         self.system_prompt = config.system_prompt
         self.confidence_threshold = config.confidence_threshold
         self.max_iterations = config.max_iterations
@@ -182,8 +181,44 @@ class ConsortiumOrchestrator:
         self.judging_method = config.judging_method
         self.iteration_history: List[IterationContext] = []
         self.consortium_id: Optional[str] = None
-        # New: Dictionary to track conversation IDs for each model instance
-        # self.conversation_ids: Dict[str, str] = {}
+        # Conversation management
+        self.model_conversations: Dict[str, llm.Conversation] = {}  # Key: f"{model_name}_{instance_id}"
+        self.arbiter_conversation: Optional[llm.Conversation] = None
+
+    def _get_model_conversation(self, model_name: str, instance_id: int) -> Optional[llm.Conversation]:
+        """Get or create a conversation for a specific model instance with error handling."""
+        key = f"{model_name}_{instance_id}"
+        if key not in self.model_conversations:
+            try:
+                model = llm.get_model(model_name)
+                self.model_conversations[key] = model.conversation()
+                logger.debug(f"Created new conversation for {key}")
+            except Exception as e:
+                logger.error(f"Failed to create conversation for model {model_name} instance {instance_id}: {e}")
+                return None
+        return self.model_conversations[key]
+
+    def _get_arbiter_conversation(self) -> Optional[llm.Conversation]:
+        """Get or create a conversation for the arbiter with error handling."""
+        if self.arbiter_conversation is None:
+            try:
+                model = llm.get_model(self.arbiter)
+                self.arbiter_conversation = model.conversation()
+                logger.debug(f"Created new conversation for arbiter {self.arbiter}")
+            except Exception as e:
+                logger.error(f"Failed to create conversation for arbiter {self.arbiter}: {e}")
+                return None
+        return self.arbiter_conversation
+
+    def reset_model_conversations(self) -> None:
+        """Reset all stored model conversations."""
+        self.model_conversations.clear()
+        logger.info("All model conversations reset.")
+
+    def reset_arbiter_conversation(self) -> None:
+        """Reset the stored arbiter conversation."""
+        self.arbiter_conversation = None
+        logger.info("Arbiter conversation reset.")
 
     def orchestrate(self, prompt: str, conversation_history: str = "", consortium_id: Optional[str] = None) -> Dict[str, Any]:
         self.consortium_id = consortium_id
@@ -329,12 +364,18 @@ class ConsortiumOrchestrator:
 
             while attempts < max_retries:
                 try:
+                    # Use conversation for the prompt with instance-specific key
+                    conversation = self._get_model_conversation(model, instance + 1)  # Pass 1-based instance ID
+                    if conversation is None:
+                        return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation.", "uuid": prompt_uuid}
+
                     xml_prompt = f"""<prompt>
         <uuid>{prompt_uuid}</uuid>
         <instruction>{prompt}</instruction>
     </prompt>"""
 
-                    response = llm.get_model(model).prompt(xml_prompt)
+                    # Use the conversation object for the prompt
+                    response = conversation.prompt(xml_prompt, stream=False)
 
                     text = response.text()
                     log_response(response, f"{model}-{instance + 1}")
@@ -484,13 +525,11 @@ Please improve your response based on this feedback."""
         return "\n".join(formatted)
 
     def _synthesize_responses(self, original_prompt: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        logger.debug("Synthesizing responses")
-        arbiter = llm.get_model(self.arbiter)
-
+        logger.debug("Synthesizing responses using arbiter conversation")
+        
         formatted_history = self._format_iteration_history()
         formatted_responses = self._format_responses(responses)
 
-        # Extract user instructions from system_prompt if available
         user_instructions = self.system_prompt or ""
 
         # Choose prompt template based on judging method
@@ -499,7 +538,6 @@ Please improve your response based on this feedback."""
         elif hasattr(self, 'judging_method') and self.judging_method == 'rank':
             arbiter_prompt_template = _read_rank_prompt()
         else:
-            # Default to arbiter prompt
             arbiter_prompt_template = _read_arbiter_prompt()
 
         arbiter_prompt = arbiter_prompt_template.format(
@@ -509,7 +547,18 @@ Please improve your response based on this feedback."""
             user_instructions=user_instructions
         )
 
-        arbiter_response = arbiter.prompt(arbiter_prompt)
+        # Use conversation for the arbiter prompt
+        arbiter_conversation = self._get_arbiter_conversation()
+        if arbiter_conversation is None:
+            logger.error("Failed to initialize arbiter conversation.")
+            return {
+                "synthesis": "Error: Arbiter unavailable.", "confidence": 0.0,
+                "analysis": "Failed to initialize arbiter conversation.", "dissent": "",
+                "needs_iteration": False, "refinement_areas": [],
+                "raw_arbiter_response": "Error initializing arbiter conversation."
+            }
+
+        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter)
 
