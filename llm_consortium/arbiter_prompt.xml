@@ -21,7 +21,7 @@ Please follow these steps to complete your task:
 8. Decide if more thinking could improve the synthesis. If so, recommend more iterations.
 9. Always provide suggestions for refinement areas, unexplored angles or additional information that could enhance the responses.
 
-Wrap your thought process inside <think> tags before providing the final output. In your thought process, consider the following questions:
+Wrap your thought process inside <thinking> tags before providing the final output. In your thought process, consider the following questions:
 - What are the key points addressed by each model response?
 - How do the responses align or differ from each other?
 - What are the strengths and weaknesses of each response?

@@ -7,6 +7,10 @@ import llm
 import json
 import pathlib
 import sqlite_utils
+try:
+    from . import logs_db_path as _consortium_logs_db_path
+except Exception:
+    _consortium_logs_db_path = None
 from typing import Optional, Dict, Any, List
 from dataclasses import dataclass, asdict
 import logging
@@ -31,12 +35,26 @@ class ConsortiumResponse:
         if not self.conversation_id:
             self.conversation_id = str(uuid.uuid4())
 
+
+    def to_dict(self) -> dict:
+        return {
+            "model_id": self.model_id,
+            "content": self.content,
+            "confidence": self.confidence,
+            "reasoning": self.reasoning,
+            "timestamp": self.timestamp,
+            "conversation_id": self.conversation_id,
+        }
+
 class ConversationManager:
     """Manages LLM conversations with proper persistence"""
     
     def __init__(self, db_path: Optional[pathlib.Path] = None):
         if db_path is None:
-            self.db_path = pathlib.Path.home() / '.config' / 'llm-consortium' / 'conversations.db'
+            if _consortium_logs_db_path is not None:
+                self.db_path = _consortium_logs_db_path()
+            else:
+                self.db_path = pathlib.Path('logs.db')
         else:
             self.db_path = db_path
         
@@ -161,24 +179,131 @@ class ConversationManager:
         
         return list(self.db.execute(query, params))
     
-    def complete_session(self, session_id: str, final_result: str, metadata: Dict = None):
-        """Mark a session as completed with final result"""
-        update_data = {
-            'completed_at': datetime.now().isoformat(),
-            'final_result': final_result
-        }
-        
+    def complete_session(self, session_id: str, final_result, metadata: Dict = None):
+        """Mark a session as completed and store final_result JSON (dict) or string."""
+        completed_at = datetime.now().isoformat()
+        # Serialize final_result to JSON if it is not a string
+        if not isinstance(final_result, str):
+            try:
+                final_result_str = json.dumps(final_result)
+            except Exception:
+                final_result_str = str(final_result)
+        else:
+            final_result_str = final_result
+
         if metadata:
-            update_data['metadata_json'] = json.dumps(metadata)
-        
-        self.db['consortium_sessions'].update(session_id, update_data, pk='session_id')
-    
-    def get_session_info(self, session_id: str) -> Optional[Dict]:
-        """Get session information"""
+            try:
+                self.db.execute(
+                    "UPDATE consortium_sessions SET completed_at = ?, final_result = ?, metadata_json = ? WHERE session_id = ?",
+                    [completed_at, final_result_str, json.dumps(metadata), session_id],
+                )
+            except Exception:
+                # Fallback without metadata if column constraints differ
+                self.db.execute(
+                    "UPDATE consortium_sessions SET completed_at = ?, final_result = ? WHERE session_id = ?",
+                    [completed_at, final_result_str, session_id],
+                )
+        else:
+            self.db.execute(
+                "UPDATE consortium_sessions SET completed_at = ?, final_result = ? WHERE session_id = ?",
+                [completed_at, final_result_str, session_id],
+            )
+
+    def log_model_response(self, session_id: str, response: Dict[str, Any]) -> int:
+        """
+        Log a single model response for a session.
+        response expects keys: model_id, content, confidence?, reasoning?, conversation_id?, timestamp?, iteration?
+        Returns inserted row id (best-effort).
+        """
+        if not isinstance(response, dict):
+            raise TypeError("response must be a dict (use ConsortiumResponse.to_dict())")
+        model_id = response.get("model_id") or response.get("model")
+        content = response.get("content") or response.get("response_content")
+        if not model_id or content is None:
+            raise ValueError("response must include model_id and content")
+        conv_id = response.get("conversation_id") or str(uuid.uuid4())
+        confidence = response.get("confidence")
+        reasoning = response.get("reasoning")
+        ts = response.get("timestamp") or datetime.now().isoformat()
+        iteration = int(response.get("iteration") or 0)
+        row = {
+            "session_id": session_id,
+            "model_id": str(model_id),
+            "conversation_id": str(conv_id),
+            "response_content": str(content),
+            "confidence": float(confidence) if confidence is not None else None,
+            "reasoning": reasoning,
+            "iteration": iteration,
+            "timestamp": ts,
+        }
+        self.db["model_responses"].insert(row)
         try:
-            return next(iter(self.db.execute(
-                "SELECT * FROM consortium_sessions WHERE session_id = ?", 
+            rec = next(self.db.query("SELECT id FROM model_responses WHERE session_id = ? ORDER BY id DESC LIMIT 1", [session_id]))
+            return int(rec["id"]) if isinstance(rec, dict) else int(rec[0])
+        except Exception:
+            return 0
+
+
+
+    def get_model_responses(self, session_id: str) -> List[Dict[str, Any]]:
+        """Fetch all model responses for a session ordered by id."""
+        rows = list(self.db.query("SELECT * FROM model_responses WHERE session_id = ? ORDER BY id", [session_id]))
+        return [dict(r) for r in rows]
+
+
+
+    def log_model_response(self, session_id: str, response: Dict[str, Any]) -> int:
+        """Log a single model response for a session and return inserted id (best-effort)."""
+        if not isinstance(response, dict):
+            raise TypeError("response must be a dict (use ConsortiumResponse.to_dict())")
+        model_id = response.get("model_id") or response.get("model")
+        content = response.get("content") or response.get("response_content")
+        if not model_id or content is None:
+            raise ValueError("response must include model_id and content")
+        conv_id = response.get("conversation_id") or str(uuid.uuid4())
+        confidence = response.get("confidence")
+        reasoning = response.get("reasoning")
+        ts = response.get("timestamp") or datetime.now().isoformat()
+        iteration = int(response.get("iteration") or 0)
+        row = {
+            "session_id": session_id,
+            "model_id": str(model_id),
+            "conversation_id": str(conv_id),
+            "response_content": str(content),
+            "confidence": float(confidence) if confidence is not None else None,
+            "reasoning": reasoning,
+            "iteration": iteration,
+            "timestamp": ts,
+        }
+        self.db["model_responses"].insert(row)
+        try:
+            rec = next(self.db.query(
+                "SELECT id FROM model_responses WHERE session_id = ? ORDER BY id DESC LIMIT 1",
                 [session_id]
-            )))
-        except StopIteration:
+            ))
+            return int(rec["id"]) if isinstance(rec, dict) else int(rec[0])
+        except Exception:
+            return 0
+
+
+
+    def get_model_responses(self, session_id: str) -> List[Dict[str, Any]]:
+        """Fetch all model responses for a session ordered by id."""
+        rows = list(self.db.query(
+            "SELECT * FROM model_responses WHERE session_id = ? ORDER BY id",
+            [session_id]
+        ))
+        return [dict(r) for r in rows]
+
+
+
+    def get_session_info(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Return a single session row as dict (or None)."""
+        rows = list(self.db.query(
+            "SELECT * FROM consortium_sessions WHERE session_id = ?",
+            [session_id]
+        ))
+        if not rows:
             return None
+        return dict(rows[0])
+

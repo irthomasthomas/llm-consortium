@@ -2,7 +2,7 @@ Please follow these steps when formulating your response:
 
 1. Begin by carefully considering the specific instructions provided.
 
-2. Write your thought process inside <think> tags. In this section:
+2. Write your thought process inside <thinking> tags. In this section:
    - List key aspects that are relevant to the query
    - Identify potential challenges or limitations
    - Consider how the response instructions affect your approach
@@ -14,9 +14,9 @@ Please follow these steps when formulating your response:
 
 Your response should follow this structure:
 
-<think>
+<thinking>
 [Your detailed thought process, exploring various aspects of the problem]
-</think>
+</thinking>
 
 <answer>
 [Your final, well-considered answer to the query]

@@ -10,6 +10,7 @@ import re
 import os
 import pathlib
 import sqlite_utils
+from .conversation_manager import ConversationManager, ConsortiumResponse
 from pydantic import BaseModel
 import time  # added import for time
 import concurrent.futures  # Add concurrent.futures for parallel processing
