@@ -1,7 +1,7 @@
 import click
 import json
 import llm
-from llm.cli import load_conversation, resolve_alias_options  # Import from llm.cli instead of llm
+from llm.cli import load_conversation  # Import from llm.cli instead of llm
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import logging
