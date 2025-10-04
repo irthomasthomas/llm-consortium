@@ -1,7 +1,7 @@
 import click
 import json
 import llm
-from llm.cli import load_conversation  # Import from llm.cli instead of llm
+from llm.cli import load_conversation, resolve_alias_options  # Import from llm.cli instead of llm
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import logging
@@ -335,8 +335,6 @@ class ConsortiumOrchestrator:
                             executor.submit(self._get_model_response, model, prompt, instance, self.consortium_id)
                         )
                         first_prompt_sent = True
-                        # Sleep for 5 seconds to allow prompt caching to kick in
-                        time.sleep(5)
                     else:
                         futures.append(
                             executor.submit(self._get_model_response, model, prompt, instance, self.consortium_id)
@@ -375,8 +373,12 @@ class ConsortiumOrchestrator:
         <instruction>{prompt}</instruction>
     </prompt>"""
 
-                    # Use the conversation object for the prompt
-                    response = conversation.prompt(xml_prompt, stream=False)
+                    # Use the conversation object for the prompt, applying alias options
+                    alias_opts = resolve_alias_options(model)
+                    if alias_opts and alias_opts.get("options"):
+                        response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
+                    else:
+                        response = conversation.prompt(xml_prompt, stream=False)
 
                     text = response.text()
                     log_response(response, f"{model}-{instance + 1}")
@@ -559,7 +561,12 @@ Please improve your response based on this feedback."""
                 "raw_arbiter_response": "Error initializing arbiter conversation."
             }
 
-        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
+        # Apply alias options to arbiter prompt
+        alias_opts = resolve_alias_options(self.arbiter)
+        if alias_opts and alias_opts.get("options"):
+            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False, **alias_opts["options"])
+        else:
+            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter)
 
