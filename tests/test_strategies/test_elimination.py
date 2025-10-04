@@ -2,8 +2,8 @@
 
 import pytest
 from unittest.mock import Mock, MagicMock
-from llm_consortium.strategies.elination import EliminationStrategy
-from llm_consortium.orchestrator import IterationContext
+from llm_consortium.strategies.elimination import EliminationStrategy
+from llm_consortium import IterationContext
 
 
 class TestEliminationStrategy:

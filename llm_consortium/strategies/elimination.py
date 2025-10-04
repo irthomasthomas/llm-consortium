@@ -85,7 +85,7 @@ class EliminationStrategy(ConsortiumStrategy):
     
     def update_state(self, iteration_context: 'IterationContext'):
         """Eliminate low-confidence models after each iteration"""
-        from llm_consortium.orchestrator import IterationContext
+        from llm_consortium import IterationContext
         
         synthesis = iteration_context.synthesis
         model_responses = iteration_context.model_responses
