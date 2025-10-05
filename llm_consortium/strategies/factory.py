@@ -117,3 +117,7 @@ def create_strategy(strategy_name: Optional[str], orchestrator: 'ConsortiumOrche
 # Register elimination strategy
 from .elimination import EliminationStrategy
 _strategy_registry["elimination"] = EliminationStrategy
+
+# Register voting strategy
+from .voting import VotingStrategy
+_strategy_registry["voting"] = VotingStrategy
