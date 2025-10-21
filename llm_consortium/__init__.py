@@ -11,7 +11,7 @@ import os
 import pathlib
 import sqlite_utils
 from .conversation_manager import ConversationManager, ConsortiumResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import time  # added import for time
 import concurrent.futures  # Add concurrent.futures for parallel processing
 import threading  # Add threading for thread-local storage
@@ -22,7 +22,7 @@ import uuid  # Add uuid import
 # Read system prompt from file
 def _read_system_prompt() -> str:
     try:
-        file_path = pathlib.Path(__file__).parent / "system_prompt.txt"
+        file_path = pathlib.Path(__file__).parent / "system_prompt.xml"
         with open(file_path, "r") as f:
             return f.read().strip()
     except Exception as e:
@@ -40,7 +40,7 @@ def _read_arbiter_prompt() -> str:
 
 def _read_iteration_prompt() -> str:
     try:
-        file_path = pathlib.Path(__file__).parent / "iteration_prompt.txt"
+        file_path = pathlib.Path(__file__).parent / "iteration_prompt.xml"
         with open(file_path, "r") as f:
             return f.read().strip()
     except Exception as e:
@@ -163,6 +163,7 @@ class ConsortiumConfig(BaseModel):
     minimum_iterations: int = 1
     arbiter: Optional[str] = None
     judging_method: str = "default"
+    manual_context: bool = Field(default=False, description="Use manual context management instead of automatic conversation objects")
 
     def to_dict(self):
         return self.model_dump()
@@ -185,9 +186,13 @@ class ConsortiumOrchestrator:
         # Conversation management
         self.model_conversations: Dict[str, llm.Conversation] = {}  # Key: f"{model_name}_{instance_id}"
         self.arbiter_conversation: Optional[llm.Conversation] = None
+        self.manual_context = config.manual_context
 
     def _get_model_conversation(self, model_name: str, instance_id: int) -> Optional[llm.Conversation]:
         """Get or create a conversation for a specific model instance with error handling."""
+        if self.manual_context:
+            return None
+            
         key = f"{model_name}_{instance_id}"
         if key not in self.model_conversations:
             try:
@@ -201,6 +206,9 @@ class ConsortiumOrchestrator:
 
     def _get_arbiter_conversation(self) -> Optional[llm.Conversation]:
         """Get or create a conversation for the arbiter with error handling."""
+        if self.manual_context:
+            return None
+            
         if self.arbiter_conversation is None:
             try:
                 model = llm.get_model(self.arbiter)
@@ -223,274 +231,457 @@ class ConsortiumOrchestrator:
 
     def orchestrate(self, prompt: str, conversation_history: str = "", consortium_id: Optional[str] = None) -> Dict[str, Any]:
         self.consortium_id = consortium_id
+        
+        if self.manual_context:
+            return self._orchestrate_manual(prompt, conversation_history, consortium_id)
+        else:
+            return self._orchestrate_automatic(prompt, consortium_id)
+
+    def _orchestrate_manual(self, prompt: str, conversation_history: str, consortium_id: Optional[str] = None) -> Dict[str, Any]:
         iteration_count = 0
         final_result = None
         original_prompt = prompt
-        raw_arbiter_response_final = "" # Store the final raw response
-
-        # Construct the prompt including history, system prompt, and original user prompt
-        full_prompt_parts = []
+        raw_arbiter_response_final = ""
+        
+        manual_history = []
         if conversation_history:
-            # Append history if provided
-            full_prompt_parts.append(conversation_history.strip())
-
-        # Add system prompt if it exists
-        if self.system_prompt:
-            system_wrapper = f"[SYSTEM INSTRUCTIONS]\n{self.system_prompt}\n[/SYSTEM INSTRUCTIONS]"
-            full_prompt_parts.append(system_wrapper)
-
-        # Add the latest user prompt for this turn
-        full_prompt_parts.append(f"Human: {original_prompt}")
-
-        combined_prompt = "\n\n".join(full_prompt_parts)
-
-        current_prompt = f"""<prompt>
-    <instruction>{combined_prompt}</instruction>
-</prompt>"""
-
-        # For non-iterative methods, run only once
-        if hasattr(self, "judging_method") and self.judging_method != "default":
-            self.max_iterations = 1
+            manual_history.append(conversation_history.strip())
+        
+        current_prompt = original_prompt
 
         while iteration_count < self.max_iterations or iteration_count < self.minimum_iterations:
             iteration_count += 1
-            logger.debug(f"Starting iteration {iteration_count}")
+            logger.debug(f"Starting manual iteration {iteration_count}")
 
-            # Get responses from all models using the current prompt
-            model_responses = self._get_model_responses(current_prompt)
-            # Add a unique ID to each response for the arbiter to reference
+            model_responses = self._get_model_responses_manual(current_prompt)
             for i, r in enumerate(model_responses, 1):
                 r['id'] = i
 
-            # Have arbiter synthesize and evaluate responses
-            synthesis_result = self._synthesize_responses(original_prompt, model_responses)
-            # Store the raw response text from this iteration
+            synthesis_result = self._synthesize_responses_manual(original_prompt, model_responses, manual_history, iteration_count)
             raw_arbiter_response_final = synthesis_result.get("raw_arbiter_response", "")
 
-
-            # Defensively check if synthesis_result is not None before proceeding
             if synthesis_result is not None:
-                 # Ensure synthesis has the required keys to avoid KeyError
                 if "confidence" not in synthesis_result:
                     synthesis_result["confidence"] = 0.0
                     logger.warning("Missing 'confidence' in synthesis, using default value 0.0")
 
-                # Store iteration context
                 self.iteration_history.append(IterationContext(synthesis_result, model_responses))
 
                 if synthesis_result["confidence"] >= self.confidence_threshold and iteration_count >= self.minimum_iterations:
                     final_result = synthesis_result
                     break
 
-                # Prepare for next iteration if needed
+                manual_history.append(f"Human: {current_prompt}")
+                manual_history.append(f"Assistant: {synthesis_result.get('synthesis', '')}")
                 current_prompt = self._construct_iteration_prompt(original_prompt, synthesis_result)
             else:
-                # Handle the unexpected case where synthesis_result is None
-                logger.error("Synthesis result was None, breaking iteration.")
-                # Use the last valid synthesis if available, otherwise create a fallback
+                logger.error("Synthesis result was None, breaking manual iteration.")
                 if self.iteration_history:
                     final_result = self.iteration_history[-1].synthesis
                 else:
                     final_result = {
-                        "synthesis": "Error: Failed to get synthesis.", "confidence": 0.0,
-                         "analysis": "Consortium failed.", "dissent": "", "needs_iteration": False,
-                         "refinement_areas": [], "raw_arbiter_response": raw_arbiter_response_final
+                        "synthesis": "Error: Failed to get synthesis.", 
+                        "confidence": 0.0,
+                        "analysis": "Consortium failed.", 
+                        "dissent": "", 
+                        "needs_iteration": False,
+                        "refinement_areas": [], 
+                        "raw_arbiter_response": raw_arbiter_response_final
                     }
                 break
 
-
         if final_result is None:
-             # If loop finished without meeting threshold, use the last synthesis_result
             final_result = synthesis_result if synthesis_result is not None else {
-                 "synthesis": "Error: No final synthesis.", "confidence": 0.0,
-                 "analysis":"Consortium finished iterations.", "dissent": "", "needs_iteration": False,
-                 "refinement_areas": [], "raw_arbiter_response": raw_arbiter_response_final
+                "synthesis": "Error: No final synthesis.", 
+                "confidence": 0.0,
+                "analysis": "Consortium finished iterations.", 
+                "dissent": "", 
+                "needs_iteration": False,
+                "refinement_areas": [], 
+                "raw_arbiter_response": raw_arbiter_response_final
             }
-
 
         return {
             "original_prompt": original_prompt,
-            # Storing all model responses might be verbose, consider adjusting if needed
             "model_responses_final_iteration": model_responses,
-            "synthesis": final_result, # This now includes raw_arbiter_response
+            "synthesis": final_result,
             "metadata": {
                 "models_used": self.models,
                 "arbiter": self.arbiter,
                 "timestamp": datetime.utcnow().isoformat(),
-                "iteration_count": iteration_count
+                "iteration_count": iteration_count,
+                "context_mode": "manual"
             }
         }
 
-    def _get_model_responses(self, prompt: str) -> List[Dict[str, Any]]:
+    def _orchestrate_automatic(self, prompt: str, consortium_id: Optional[str] = None) -> Dict[str, Any]:
+        iteration_count = 0
+        final_result = None
+        original_prompt = prompt
+        raw_arbiter_response_final = ""
+
+        while iteration_count < self.max_iterations or iteration_count < self.minimum_iterations:
+            iteration_count += 1
+            logger.debug(f"Starting automatic iteration {iteration_count}")
+
+            model_responses = self._get_model_responses_automatic(prompt, iteration_count)
+            for i, r in enumerate(model_responses, 1):
+                r['id'] = i
+
+            synthesis_result = self._synthesize_responses_automatic(original_prompt, model_responses, iteration_count)
+            raw_arbiter_response_final = synthesis_result.get("raw_arbiter_response", "")
+
+            if synthesis_result is not None:
+                if "confidence" not in synthesis_result:
+                    synthesis_result["confidence"] = 0.0
+                    logger.warning("Missing 'confidence' in synthesis, using default value 0.0")
+
+                self.iteration_history.append(IterationContext(synthesis_result, model_responses))
+
+                if synthesis_result["confidence"] >= self.confidence_threshold and iteration_count >= self.minimum_iterations:
+                    final_result = synthesis_result
+                    break
+
+                prompt = self._construct_iteration_prompt(original_prompt, synthesis_result)
+            else:
+                logger.error("Synthesis result was None, breaking automatic iteration.")
+                if self.iteration_history:
+                    final_result = self.iteration_history[-1].synthesis
+                else:
+                    final_result = {
+                        "synthesis": "Error: Failed to get synthesis.", 
+                        "confidence": 0.0,
+                        "analysis": "Consortium failed.", 
+                        "dissent": "", 
+                        "needs_iteration": False,
+                        "refinement_areas": [], 
+                        "raw_arbiter_response": raw_arbiter_response_final
+                    }
+                break
+
+        if final_result is None:
+            final_result = synthesis_result if synthesis_result is not None else {
+                "synthesis": "Error: No final synthesis.", 
+                "confidence": 0.0,
+                "analysis": "Consortium finished iterations.", 
+                "dissent": "", 
+                "needs_iteration": False,
+                "refinement_areas": [], 
+                "raw_arbiter_response": raw_arbiter_response_final
+            }
+
+        return {
+            "original_prompt": original_prompt,
+            "model_responses_final_iteration": model_responses,
+            "synthesis": final_result,
+            "metadata": {
+                "models_used": self.models,
+                "arbiter": self.arbiter,
+                "timestamp": datetime.utcnow().isoformat(),
+                "iteration_count": iteration_count,
+                "context_mode": "automatic"
+            }
+        }
+
+    def _get_model_responses_manual(self, prompt: str) -> List[Dict[str, Any]]:
         responses = []
-        first_prompt_sent = False
-        
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
             for model, count in self.models.items():
                 for instance in range(count):
-                    # If this is the first prompt, mark it and submit immediately
-                    if not first_prompt_sent:
-                        futures.append(
-                            executor.submit(self._get_model_response, model, prompt, instance, self.consortium_id)
-                        )
-                        first_prompt_sent = True
-                    else:
-                        futures.append(
-                            executor.submit(self._get_model_response, model, prompt, instance, self.consortium_id)
-                        )
+                    futures.append(
+                        executor.submit(self._get_single_model_response_manual, model, prompt, instance)
+                    )
 
-            # Gather all results as they complete
             for future in concurrent.futures.as_completed(futures):
                 responses.append(future.result())
 
         return responses
 
-    def _get_model_response(self, model: str, prompt: str, instance: int, consortium_id: Optional[str] = None) -> Dict[str, Any]:
-        # Generate a unique UUID for this specific prompt
+    def _get_single_model_response_manual(self, model: str, prompt: str, instance: int) -> Dict[str, Any]:
         prompt_uuid = str(uuid.uuid4())
         
         if model == 'test-model':
             response = llm.Response.fake()
             response._set_content('test response')
-        else:
-            logger.debug(f"Getting response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
-            attempts = 0
-            max_retries = 3
+            return {
+                "model": model,
+                "instance": instance + 1,
+                "response": 'test response',
+                "confidence": self._parse_confidence_value('test response'),
+                "uuid": prompt_uuid,
+            }
+        
+        logger.debug(f"Getting manual response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
+        attempts = 0
+        max_retries = 3
 
-            # Generate a unique key for this model instance
-            instance_key = f"{model}-{instance}"
-
-            while attempts < max_retries:
-                try:
-                    # Use conversation for the prompt with instance-specific key
-                    conversation = self._get_model_conversation(model, instance + 1)  # Pass 1-based instance ID
-                    if conversation is None:
-                        return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation.", "uuid": prompt_uuid}
-
-                    xml_prompt = f"""<prompt>
+        while attempts < max_retries:
+            try:
+                model_obj = llm.get_model(model)
+                xml_prompt = f"""<prompt>
         <uuid>{prompt_uuid}</uuid>
         <instruction>{prompt}</instruction>
     </prompt>"""
 
-                    # Use the conversation object for the prompt, applying alias options
-                    alias_opts = resolve_alias_options(model)
-                    if alias_opts and alias_opts.get("options"):
-                        response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
-                    else:
-                        response = conversation.prompt(xml_prompt, stream=False)
+                alias_opts = resolve_alias_options(model)
+                if alias_opts and alias_opts.get("options"):
+                    response = model_obj.prompt(xml_prompt, stream=False, **alias_opts["options"])
+                else:
+                    response = model_obj.prompt(xml_prompt, stream=False)
 
-                    text = response.text()
-                    log_response(response, f"{model}-{instance + 1}")
-                    return {
-                        "model": model,
-                        "instance": instance + 1,
-                        "response": text,
-                        "confidence": self._extract_confidence(text),
-                        "uuid": prompt_uuid,  # Include UUID in response
-                    }
-                except Exception as e:
-                    # Check if the error is a rate-limit error
-                    if "RateLimitError" in str(e):
-                        attempts += 1
-                        wait_time = 2 ** attempts  # exponential backoff
-                        logger.warning(f"Rate limit encountered for {model}, retrying in {wait_time} seconds... (attempt {attempts})")
-                        time.sleep(wait_time)
-                    else:
-                        logger.exception(f"Error getting response from {model} instance {instance + 1}")
-                        return {"model": model, "instance": instance + 1, "error": str(e), "uuid": prompt_uuid}
-            return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries.", "uuid": prompt_uuid}
+                text = response.text()
+                log_response(response, f"{model}-{instance + 1}")
+                return {
+                    "model": model,
+                    "instance": instance + 1,
+                    "response": text,
+                    "confidence": self._parse_confidence_value(text),
+                    "uuid": prompt_uuid,
+                }
+            except Exception as e:
+                if "RateLimitError" in str(e):
+                    attempts += 1
+                    wait_time = 2 ** attempts
+                    logger.warning(f"Rate limit encountered for {model}, retrying in {wait_time} seconds... (attempt {attempts})")
+                    time.sleep(wait_time)
+                else:
+                    logger.exception(f"Error getting manual response from {model} instance {instance + 1}")
+                    return {"model": model, "instance": instance + 1, "error": str(e), "uuid": prompt_uuid}
+        return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries.", "uuid": prompt_uuid}
 
-    def _parse_confidence_value(self, text: str, default: float = 0.0) -> float:
-        """Helper method to parse confidence values consistently."""
-        # Try to find XML confidence tag, now handling multi-line and whitespace better
-        xml_match = re.search(r"<confidence>\s*(0?\.?\d+|1\.0|\d+)\s*</confidence>", text, re.IGNORECASE | re.DOTALL)
-        if xml_match:
+    def _get_model_responses_automatic(self, prompt: str, iteration: int) -> List[Dict[str, Any]]:
+        responses = []
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for model, count in self.models.items():
+                for instance in range(count):
+                    futures.append(
+                        executor.submit(self._get_single_model_response_automatic, model, prompt, instance, iteration)
+                    )
+
+            for future in concurrent.futures.as_completed(futures):
+                responses.append(future.result())
+
+        return responses
+
+    def _get_single_model_response_automatic(self, model: str, prompt: str, instance: int, iteration: int) -> Dict[str, Any]:
+        prompt_uuid = str(uuid.uuid4())
+        
+        if model == 'test-model':
+            response = llm.Response.fake()
+            response._set_content('test response')
+            return {
+                "model": model,
+                "instance": instance + 1,
+                "response": 'test response',
+                "confidence": self._parse_confidence_value('test response'),
+                "uuid": prompt_uuid,
+            }
+        
+        logger.debug(f"Getting automatic response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
+        attempts = 0
+        max_retries = 3
+
+        while attempts < max_retries:
             try:
-                value = float(xml_match.group(1).strip())
-                return value / 100 if value > 1 else value
-            except ValueError:
-                pass
+                conversation = self._get_model_conversation(model, instance + 1)
+                if conversation is None:
+                    return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation.", "uuid": prompt_uuid}
 
-        # Fallback to plain text parsing
-        for line in text.lower().split("\n"):
-            if "confidence:" in line or "confidence level:" in line:
-                try:
-                    nums = re.findall(r"(\d*\.?\d+)%?", line)
-                    if nums:
-                        num = float(nums[0])
-                        return num / 100 if num > 1 else num
-                except (IndexError, ValueError):
-                    pass
+                xml_prompt = f"""<prompt>
+        <uuid>{prompt_uuid}</uuid>
+        <instruction>{prompt}</instruction>
+    </prompt>"""
 
-        return default
+                alias_opts = resolve_alias_options(model)
+                if alias_opts and alias_opts.get("options"):
+                    response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
+                else:
+                    response = conversation.prompt(xml_prompt, stream=False)
 
-    def _extract_confidence(self, text: str) -> float:
-        return self._parse_confidence_value(text)
+                text = response.text()
+                log_response(response, f"{model}-{instance + 1}")
+                return {
+                    "model": model,
+                    "instance": instance + 1,
+                    "response": text,
+                    "confidence": self._parse_confidence_value(text),
+                    "uuid": prompt_uuid,
+                }
+            except Exception as e:
+                if "RateLimitError" in str(e):
+                    attempts += 1
+                    wait_time = 2 ** attempts
+                    logger.warning(f"Rate limit encountered for {model}, retrying in {wait_time} seconds... (attempt {attempts})")
+                    time.sleep(wait_time)
+                else:
+                    logger.exception(f"Error getting response from {model} instance {instance + 1}")
+                    return {"model": model, "instance": instance + 1, "error": str(e), "uuid": prompt_uuid}
+        return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries.", "uuid": prompt_uuid}
 
-    def _construct_iteration_prompt(self, original_prompt: str, last_synthesis: Dict[str, Any]) -> str:
-        """Construct the prompt for the next iteration."""
-        # Use the iteration prompt template from file instead of a hardcoded string
-        iteration_prompt_template = _read_iteration_prompt()
+    def _get_model_responses(self, prompt: str) -> List[Dict[str, Any]]:
+        # This method is now a dispatcher
+        if self.manual_context:
+            return self._get_model_responses_manual(prompt)
+        else:
+            current_iteration = len(self.iteration_history) + 1
+            return self._get_model_responses_automatic(prompt, current_iteration)
 
-        # If template exists, use it with formatting, otherwise fall back to previous implementation
-        if iteration_prompt_template:
-            # Include the user_instructions parameter from the system_prompt
-            user_instructions = self.system_prompt or ""
+    def _get_model_response(self, model: str, prompt: str, instance: int, consortium_id: Optional[str] = None) -> Dict[str, Any]:
+        # This method is now deprecated - redirect to appropriate method
+        if self.manual_context:
+            return self._get_single_model_response_manual(model, prompt, instance)
+        else:
+            current_iteration = len(self.iteration_history) + 1
+            return self._get_single_model_response_automatic(model, prompt, instance, current_iteration)
 
-            # Ensure all required keys exist in last_synthesis to prevent KeyError
-            formatted_synthesis = {
-                "synthesis": last_synthesis.get("synthesis", ""),
-                "confidence": last_synthesis.get("confidence", 0.0),
-                "analysis": last_synthesis.get("analysis", ""),
-                "dissent": last_synthesis.get("dissent", ""),
-                "needs_iteration": last_synthesis.get("needs_iteration", True),
-                "refinement_areas": last_synthesis.get("refinement_areas", [])
+    def _synthesize_responses_manual(self, original_prompt: str, responses: List[Dict[str, Any]], manual_history: List[str], iteration: int) -> Dict[str, Any]:
+        logger.debug("Synthesizing responses in manual mode")
+        
+        valid_responses = [r for r in responses if 'error' not in r]
+        if not valid_responses:
+            return {"synthesis": "Error: No valid responses.", "confidence": 0.0, "analysis": "All model responses failed.", "dissent": "", "needs_iteration": False, "refinement_areas": []}
+
+        formatted_history = "\n\n".join(manual_history) if manual_history else "<no_previous_iterations>No previous iterations available.</no_previous_iterations>"
+        formatted_responses = self._format_responses(valid_responses)
+        user_instructions = self.system_prompt or ""
+
+        if self.judging_method == 'pick-one':
+            arbiter_prompt_template = _read_pick_one_prompt()
+        elif self.judging_method == 'rank':
+            arbiter_prompt_template = _read_rank_prompt()
+        else:
+            arbiter_prompt_template = _read_arbiter_prompt()
+
+        arbiter_prompt = arbiter_prompt_template.format(
+            original_prompt=original_prompt,
+            formatted_responses=formatted_responses,
+            formatted_history=formatted_history,
+            user_instructions=user_instructions
+        )
+
+        try:
+            arbiter_model = llm.get_model(self.arbiter)
+            response = arbiter_model.prompt(arbiter_prompt, stream=False)
+            raw_arbiter_text = response.text()
+            log_response(response, self.arbiter)
+
+            try:
+                if self.judging_method == 'pick-one':
+                    parsed_result = self._parse_pick_one_response(raw_arbiter_text, valid_responses)
+                elif self.judging_method == 'rank':
+                    parsed_result = self._parse_rank_response(raw_arbiter_text, valid_responses)
+                else:
+                    parsed_result = self._parse_arbiter_response(raw_arbiter_text)
+                
+                parsed_result['raw_arbiter_response'] = raw_arbiter_text
+                return parsed_result
+            except Exception as e:
+                logger.error(f"Error parsing arbiter response: {e}")
+                return {
+                    "synthesis": raw_arbiter_text,
+                    "confidence": 0.0,
+                    "analysis": "Parsing failed - see raw response",
+                    "dissent": "",
+                    "needs_iteration": False,
+                    "refinement_areas": [],
+                    "raw_arbiter_response": raw_arbiter_text
+                }
+        except Exception as e:
+            logger.error(f"Error getting arbiter response in manual mode: {e}")
+            return {
+                "synthesis": "Error: Arbiter failed.",
+                "confidence": 0.0,
+                "analysis": "Arbiter model failed to produce response.",
+                "dissent": "",
+                "needs_iteration": False,
+                "refinement_areas": [],
+                "raw_arbiter_response": str(e)
             }
 
-            # Check if the template requires refinement_areas
-            if "{refinement_areas}" in iteration_prompt_template:
-                try:
-                    return iteration_prompt_template.format(
-                        original_prompt=original_prompt,
-                        previous_synthesis=json.dumps(formatted_synthesis, indent=2),
-                        user_instructions=user_instructions,
-                        refinement_areas="\n".join(formatted_synthesis["refinement_areas"])
-                    )
-                except KeyError:
-                    # Fallback if format fails
-                    return f"""Refining response for original prompt:
-{original_prompt}
+    def _synthesize_responses_automatic(self, original_prompt: str, responses: List[Dict[str, Any]], iteration: int) -> Dict[str, Any]:
+        logger.debug("Synthesizing responses in automatic mode")
+        
+        valid_responses = [r for r in responses if 'error' not in r]
+        if not valid_responses:
+            return {"synthesis": "Error: No valid responses.", "confidence": 0.0, "analysis": "All model responses failed.", "dissent": "", "needs_iteration": False, "refinement_areas": [], "raw_arbiter_response": ""}
 
-Arbiter feedback from previous attempt:
-{json.dumps(formatted_synthesis, indent=2)}
+        # In automatic mode, DO NOT inject formatted history - let conversation object handle it
+        formatted_responses = self._format_responses(valid_responses)
+        user_instructions = self.system_prompt or ""
 
-Please improve your response based on this feedback."""
-            else:
-                try:
-                    return iteration_prompt_template.format(
-                        original_prompt=original_prompt,
-                        previous_synthesis=json.dumps(formatted_synthesis, indent=2),
-                        user_instructions=user_instructions
-                    )
-                except KeyError:
-                    # Fallback if format fails
-                    return f"""Refining response for original prompt:
-{original_prompt}
-
-Arbiter feedback from previous attempt:
-{json.dumps(formatted_synthesis, indent=2)}
-
-Please improve your response based on this feedback."""
+        if self.judging_method == 'pick-one':
+            arbiter_prompt_template = _read_pick_one_prompt()
+        elif self.judging_method == 'rank':
+            arbiter_prompt_template = _read_rank_prompt()
         else:
-            # Fallback to previous hardcoded prompt
-            return f"""Refining response for original prompt:
-{original_prompt}
+            arbiter_prompt_template = _read_arbiter_prompt()
 
-Arbiter feedback from previous attempt:
-{json.dumps(last_synthesis, indent=2)}
+        # Remove {formatted_history} placeholder from template in auto mode
+        # The conversation object will provide historical context automatically
+        arbiter_prompt_template = arbiter_prompt_template.replace("{formatted_history}", "")
+        
+        # Only include current iteration's essential context
+        arbiter_prompt = arbiter_prompt_template.format(
+            original_prompt=original_prompt,
+            formatted_responses=formatted_responses,
+            user_instructions=user_instructions
+        )
 
-Please improve your response based on this feedback."""
+        arbiter_conversation = self._get_arbiter_conversation()
+        if arbiter_conversation is None:
+            logger.error("Failed to initialize arbiter conversation.")
+            return {
+                "synthesis": "Error: Arbiter unavailable.", 
+                "confidence": 0.0,
+                "analysis": "Failed to initialize arbiter conversation.", 
+                "dissent": "",
+                "needs_iteration": False, 
+                "refinement_areas": [],
+                "raw_arbiter_response": "Error initializing arbiter conversation."
+            }
+
+        alias_opts = resolve_alias_options(self.arbiter)
+        if alias_opts and alias_opts.get("options"):
+            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False, **alias_opts["options"])
+        else:
+            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
+        raw_arbiter_text = arbiter_response.text()
+        log_response(arbiter_response, self.arbiter)
+
+        try:
+            if self.judging_method == 'pick-one':
+                parsed_result = self._parse_pick_one_response(raw_arbiter_text, valid_responses)
+            elif self.judging_method == 'rank':
+                parsed_result = self._parse_rank_response(raw_arbiter_text, valid_responses)
+            else:
+                parsed_result = self._parse_arbiter_response(raw_arbiter_text)
+            
+            parsed_result['raw_arbiter_response'] = raw_arbiter_text
+            return parsed_result
+        except Exception as e:
+            logger.error(f"Error parsing arbiter response: {e}")
+            return {
+                "synthesis": raw_arbiter_text,
+                "confidence": 0.0,
+                "analysis": "Parsing failed - see raw response",
+                "dissent": "",
+                "needs_iteration": False,
+                "refinement_areas": [],
+                "raw_arbiter_response": raw_arbiter_text
+            }
+
+    def _synthesize_responses(self, original_prompt: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        # This method is now a dispatcher
+        if self.manual_context:
+            manual_history = []
+            for iteration in self.iteration_history:
+                manual_history.append(f"Human: {original_prompt}")
+                manual_history.append(f"Assistant: {iteration.synthesis.get('synthesis', '')}")
+            return self._synthesize_responses_manual(original_prompt, responses, manual_history, len(self.iteration_history) + 1)
+        else:
+            return self._synthesize_responses_automatic(original_prompt, responses, len(self.iteration_history) + 1)
 
     def _format_iteration_history(self) -> str:
         history = []
@@ -527,75 +718,97 @@ Please improve your response based on this feedback."""
         </model_response>""")
         return "\n".join(formatted)
 
-    def _synthesize_responses(self, original_prompt: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        logger.debug("Synthesizing responses using arbiter conversation")
-        
-        formatted_history = self._format_iteration_history()
-        formatted_responses = self._format_responses(responses)
+    def _parse_confidence_value(self, text: str, default: float = 0.0) -> float:
+        """Helper method to parse confidence values consistently."""
+        # Try to find XML confidence tag, now handling multi-line and whitespace better
+        xml_match = re.search(r"<confidence>\s*(0?\.?\d+|1\.0|\d+)\s*</confidence>", text, re.IGNORECASE | re.DOTALL)
+        if xml_match:
+            try:
+                value = float(xml_match.group(1).strip())
+                return value / 100 if value > 1 else value
+            except ValueError:
+                pass
 
-        user_instructions = self.system_prompt or ""
+        # Fallback to plain text parsing
+        for line in text.lower().split("\n"):
+            if "confidence:" in line or "confidence level:" in line:
+                try:
+                    nums = re.findall(r"(\d*\.?\d+)%?", line)
+                    if nums:
+                        num = float(nums[0])
+                        return num / 100 if num > 1 else num
+                except (IndexError, ValueError):
+                    pass
 
-        # Choose prompt template based on judging method
-        if hasattr(self, 'judging_method') and self.judging_method == 'pick-one':
-            arbiter_prompt_template = _read_pick_one_prompt()
-        elif hasattr(self, 'judging_method') and self.judging_method == 'rank':
-            arbiter_prompt_template = _read_rank_prompt()
-        else:
-            arbiter_prompt_template = _read_arbiter_prompt()
+        return default
 
-        arbiter_prompt = arbiter_prompt_template.format(
-            original_prompt=original_prompt,
-            formatted_responses=formatted_responses,
-            formatted_history=formatted_history,
-            user_instructions=user_instructions
-        )
+    def _construct_iteration_prompt(self, original_prompt: str, last_synthesis: Dict[str, Any]) -> str:
+        """Construct the prompt for the next iteration."""
+        iteration_prompt_template = _read_iteration_prompt()
 
-        # Use conversation for the arbiter prompt
-        arbiter_conversation = self._get_arbiter_conversation()
-        if arbiter_conversation is None:
-            logger.error("Failed to initialize arbiter conversation.")
-            return {
-                "synthesis": "Error: Arbiter unavailable.", "confidence": 0.0,
-                "analysis": "Failed to initialize arbiter conversation.", "dissent": "",
-                "needs_iteration": False, "refinement_areas": [],
-                "raw_arbiter_response": "Error initializing arbiter conversation."
+        if iteration_prompt_template:
+            user_instructions = self.system_prompt or ""
+            formatted_synthesis = {
+                "synthesis": last_synthesis.get("synthesis", ""),
+                "confidence": last_synthesis.get("confidence", 0.0),
+                "analysis": last_synthesis.get("analysis", ""),
+                "dissent": last_synthesis.get("dissent", ""),
+                "needs_iteration": last_synthesis.get("needs_iteration", True),
+                "refinement_areas": last_synthesis.get("refinement_areas", [])
             }
 
-        # Apply alias options to arbiter prompt
-        alias_opts = resolve_alias_options(self.arbiter)
-        if alias_opts and alias_opts.get("options"):
-            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False, **alias_opts["options"])
-        else:
-            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
-        raw_arbiter_text = arbiter_response.text()
-        log_response(arbiter_response, self.arbiter)
+            # Simplified prompt for automatic mode - conversation memory handles context
+            if not self.manual_context:
+                # Use concise iteration prompt that relies on conversation history
+                return f"""Based on my previous feedback, please refine your response to the original prompt.
 
-        try:
-            # Choose parser based on judging method
-            if hasattr(self, 'judging_method') and self.judging_method == 'pick-one':
-                parsed_result = self._parse_pick_one_response(raw_arbiter_text, responses)
-            elif hasattr(self, 'judging_method') and self.judging_method == 'rank':
-                parsed_result = self._parse_rank_response(raw_arbiter_text, responses)
-            else:
-                parsed_result = self._parse_arbiter_response(raw_arbiter_text)
+Focus on these areas for improvement:
+{chr(10).join('- ' + area for area in formatted_synthesis["refinement_areas"]) if formatted_synthesis["refinement_areas"] else '- General quality improvement'}
+
+Previous confidence level: {formatted_synthesis["confidence"]:.2f}"""
             
-            # Add raw response to the parsed result
-            parsed_result['raw_arbiter_response'] = raw_arbiter_text
-            return parsed_result
-        except Exception as e:
-            logger.error(f"Error parsing arbiter response: {e}")
-            # Return fallback dict INCLUDING raw response
-            return {
-                "synthesis": raw_arbiter_text, # Fallback synthesis is raw text
-                "confidence": 0.0,
-                "analysis": "Parsing failed - see raw response",
-                "dissent": "",
-                "needs_iteration": False,
-                "refinement_areas": [],
-                "raw_arbiter_response": raw_arbiter_text # Ensure raw is included here
-            }
+            # Full context for manual mode
+            if "{refinement_areas}" in iteration_prompt_template:
+                try:
+                    return iteration_prompt_template.format(
+                        original_prompt=original_prompt,
+                        previous_synthesis=json.dumps(formatted_synthesis, indent=2),
+                        user_instructions=user_instructions,
+                        refinement_areas="\n".join(formatted_synthesis["refinement_areas"])
+                    )
+                except KeyError:
+                    return f"""Refining response for original prompt:
+{original_prompt}
 
-    
+Arbiter feedback from previous attempt:
+{json.dumps(formatted_synthesis, indent=2)}
+
+Please improve your response based on this feedback."""
+            else:
+                try:
+                    return iteration_prompt_template.format(
+                        original_prompt=original_prompt,
+                        previous_synthesis=json.dumps(formatted_synthesis, indent=2),
+                        user_instructions=user_instructions
+                    )
+                except KeyError:
+                    return f"""Refining response for original prompt:
+{original_prompt}
+
+Arbiter feedback from previous attempt:
+{json.dumps(formatted_synthesis, indent=2)}
+
+Please improve your response based on this feedback."""
+        else:
+            # Fallback
+            return f"""Refining response for original prompt:
+{original_prompt}
+
+Arbiter feedback from previous attempt:
+{json.dumps(last_synthesis, indent=2)}
+
+Please improve your response based on this feedback."""
+
     def _parse_arbiter_response(self, text: str, is_final_iteration: bool = False) -> Dict[str, Any]:
         """Parse arbiter response with special handling for final iteration."""
         sections = {
@@ -615,7 +828,6 @@ Please improve your response based on this feedback."""
             "dissent": "",
             "needs_iteration": False,
             "refinement_areas": []
-            # raw_arbiter_response is added in _synthesize_responses
         }
 
         for key, pattern in sections.items():
@@ -627,21 +839,14 @@ Please improve your response based on this feedback."""
                         value = float(extracted_text)
                         result[key] = value / 100 if value > 1 else value
                     except (ValueError, TypeError):
-                        # Keep default value if conversion fails
                         logger.warning(f"Could not parse confidence value: {extracted_text}")
                 elif key == "needs_iteration":
                     result[key] = extracted_text.lower() == "true"
                 elif key == "refinement_areas":
-                    # Parse refinement areas, splitting by newline and filtering empty
                     result[key] = [area.strip() for area in re.split(r'\s*<area>\s*|\s*</area>\s*', extracted_text) if area.strip()]
-
                 else:
-                    result[key] = extracted_text # Store the clean extracted text
+                    result[key] = extracted_text
 
-        # No special handling for is_final_iteration needed here anymore,
-        # the synthesis field should contain the clean text if parsed correctly.
-
-        # *** FIX: Explicitly return the result dictionary ***
         return result
 
     def _parse_pick_one_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -654,9 +859,13 @@ Please improve your response based on this feedback."""
         if not chosen_response:
             raise ValueError(f"Arbiter chose response ID {chosen_id}, but this ID was not found.")
         return {
-            "synthesis": chosen_response['response'], "confidence": 1.0,
+            "synthesis": chosen_response['response'], 
+            "confidence": 1.0,
             "analysis": f"Arbiter selected response #{chosen_id} from model '{chosen_response['model']}'.",
-            "dissent": "", "needs_iteration": False, "refinement_areas": [], "chosen_id": chosen_id
+            "dissent": "", 
+            "needs_iteration": False, 
+            "refinement_areas": [], 
+            "chosen_id": chosen_id
         }
 
     def _parse_rank_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -673,11 +882,14 @@ Please improve your response based on this feedback."""
         if not top_response:
             raise ValueError(f"Top-ranked response ID {top_id} not found.")
         return {
-            "synthesis": top_response['response'], "confidence": 1.0,
+            "synthesis": top_response['response'], 
+            "confidence": 1.0,
             "analysis": f"Arbiter ranked all responses. Top choice is #{top_id} from '{top_response['model']}'. Full ranking: {ranked_ids}",
-            "dissent": "", "needs_iteration": False, "refinement_areas": [], "ranking": ranked_ids
+            "dissent": "", 
+            "needs_iteration": False, 
+            "refinement_areas": [], 
+            "ranking": ranked_ids
         }
-
 
 def parse_models(models: List[str], count: int) -> Dict[str, int]:
     """Parse models and counts from CLI arguments into a dictionary."""
@@ -920,72 +1132,23 @@ def register_commands(cli):
 
     @consortium.command(name="run")
     @click.argument("prompt", required=False)
-    @click.option(
-        "-m",
-        "--model", "models",  # store values in 'models'
-        multiple=True,
-        help="Model to include, use format 'model:count' or 'model' for default count. Multiple allowed.",
-        default=[], # Default to empty list, require at least one model
-    )
-    @click.option(
-        "-n",
-        "--count",
-        type=int,
-        default=1,
-        help="Default number of instances (if count not specified per model)",
-    )
-    @click.option(
-        "--arbiter",
-        help="Model to use as arbiter",
-        default="claude-3-opus-20240229"
-    )
-    @click.option(
-        "--confidence-threshold",
-        type=float,
-        help="Minimum confidence threshold (0.0-1.0)",
-        default=0.8
-    )
-    @click.option(
-        "--max-iterations",
-        type=int,
-        help="Maximum number of iteration rounds",
-        default=3
-    )
-    @click.option(
-        "--min-iterations",
-        type=int,
-        help="Minimum number of iterations to perform",
-        default=1
-    )
-    @click.option(
-        "--system",
-        help="System prompt text or path to system prompt file.",
-    )
-    @click.option(
-        "--output",
-        type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), # Use pathlib
-        help="Save full results (JSON) to this file path.",
-    )
-    @click.option(
-        "--stdin/--no-stdin", "read_from_stdin", # More descriptive name
-        default=True, # Default changed to True
-        help="Read prompt text from stdin if no prompt argument is given.",
-    )
-    @click.option(
-        "--raw",
-        is_flag=True,
-        default=False,
-        help="Output the raw, unparsed response from the final arbiter call instead of the clean synthesis.",
-    )
-    @click.option(
-        "--judging-method",
-        type=click.Choice(["default", "pick-one", "rank"], case_sensitive=False),
-        default="default",
-        help="Judging method for the arbiter (default, pick-one, rank)."
-    )
-    def run_command(prompt, models, count, arbiter, confidence_threshold, max_iterations,
-                   min_iterations, system, output, read_from_stdin, raw, judging_method):
+    @click.option("-m", "--model", "models", multiple=True, help="Model to include", default=[])
+    @click.option("-n", "--count", type=int, default=1, help="Default number of instances")
+    @click.option("--arbiter", default="claude-3-opus-20240229", help="Model to use as arbiter")
+    @click.option("--confidence-threshold", type=float, default=0.8, help="Minimum confidence threshold")
+    @click.option("--max-iterations", type=int, default=3, help="Maximum number of iteration rounds")
+    @click.option("--min-iterations", type=int, default=1, help="Minimum number of iterations to perform")
+    @click.option("--system", help="System prompt text or path to system prompt file")
+    @click.option("--output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), help="Save full results to this file")
+    @click.option("--stdin/--no-stdin", "read_from_stdin", default=True, help="Read prompt from stdin")
+    @click.option("--raw", is_flag=True, default=False, help="Output raw arbiter response")
+    @click.option("--judging-method", type=click.Choice(["default", "pick-one", "rank"], case_sensitive=False), default="default", help="Judging method")
+    @click.option("--manual-context/--auto-context", default=False, help="Use manual context instead of conversations")
+    def run_command(prompt, models, count, arbiter, confidence_threshold, max_iterations, min_iterations, system, output, read_from_stdin, raw, judging_method, manual_context):
         """Run prompt through a dynamically defined consortium of models."""
+        # Generate consortium_id at the start
+        consortium_id = secrets.token_hex(8)
+        
         # Check if models list is empty
         if not models:
             # Provide default models if none are specified
@@ -1046,16 +1209,18 @@ def register_commands(cli):
         logger.debug(f"Models: {', '.join(f'{k}:{v}' for k, v in model_dict.items())}")
         logger.debug(f"Arbiter model: {arbiter}")
         logger.debug(f"Confidence: {confidence_threshold}, Max Iter: {max_iterations}, Min Iter: {min_iterations}")
+        logger.debug(f"Context mode: {'manual' if manual_context else 'automatic'}")
 
         orchestrator = ConsortiumOrchestrator(
             config=ConsortiumConfig(
-               models=model_dict,
-               system_prompt=system_prompt_content,
-               confidence_threshold=confidence_threshold,
-               max_iterations=max_iterations,
-               minimum_iterations=min_iterations,
+                models=model_dict,
+                system_prompt=system_prompt_content,
+                confidence_threshold=confidence_threshold,
+                max_iterations=max_iterations,
+                minimum_iterations=min_iterations,
                 arbiter=arbiter,
-               judging_method=judging_method,
+                judging_method=judging_method,
+                manual_context=manual_context
             )
         )
 
@@ -1143,8 +1308,13 @@ def register_commands(cli):
         default="default",
         help="Judging method for the arbiter (default, pick-one, rank)."
     )
+    @click.option(
+        "--manual-context/--auto-context",
+        default=False,
+        help="Use manual context construction"
+    )
     def save_command(name, models, count, arbiter, confidence_threshold, max_iterations,
-                     min_iterations, system, judging_method):
+                     min_iterations, system, judging_method, manual_context):
         """Save a consortium configuration to be used as a model."""
         try:
             model_dict = parse_models(models, count)
@@ -1182,6 +1352,7 @@ def register_commands(cli):
             minimum_iterations=min_iterations,
             system_prompt=system_prompt_content,
             judging_method=judging_method,
+            manual_context=manual_context
         )
         try:
             _save_consortium_config(name, config)
@@ -1216,6 +1387,7 @@ def register_commands(cli):
                  system_prompt_display = system_prompt_display[:57] + "..."
             click.echo(f"  System Prompt: {system_prompt_display or 'Default'}")
             click.echo(f"  Judging Method: {config.judging_method}")
+            click.echo(f"  Context Mode: {'Manual' if config.manual_context else 'Automatic'}")
             click.echo("") # Empty line between consortiums
 
 

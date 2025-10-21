@@ -29,9 +29,9 @@ LLM Consortium is a plugin for the `llm` package that implements a model consort
 
 - `llm_consortium/`: Main package directory
   - `__init__.py`: Core implementation
-  - `system_prompt.txt`: Default system prompt
+  - `system_prompt.xml`: Default system prompt
   - `arbiter_prompt.xml`: Prompt for the arbiter model
-  - `iteration_prompt.txt`: Prompt for iteration refinement
+  - `iteration_prompt.xml`: Prompt for iteration refinement
 - `tests/`: Test directory
   - `test_llm_consortium.py`: Unit tests for the main package
   - `test_cli.py`: CLI tests
