@@ -18,6 +18,84 @@ import threading  # Add threading for thread-local storage
 import secrets
 import uuid  # Add uuid import
 
+class PromptTrace(BaseModel):
+    """Model for storing prompt trace information"""
+    trace_id: str
+    iteration: int
+    model: str
+    instance: int
+    prompt_text: str
+    response_text: str
+    timestamp: str
+    prompt_type: str  # 'model' or 'arbiter'
+    
+class PromptTracer:
+    """Manages tracing of prompts through consortium iterations"""
+    
+    def __init__(self, trace_id: Optional[str] = None):
+        self.trace_id = trace_id or str(uuid.uuid4())
+        self.traces: List[PromptTrace] = []
+        
+    def record_model_prompt(self, iteration: int, model: str, instance: int, 
+                           prompt: str, response: str) -> None:
+        """Record a prompt sent to a model"""
+        trace = PromptTrace(
+            trace_id=self.trace_id,
+            iteration=iteration,
+            model=model,
+            instance=instance,
+            prompt_text=prompt,
+            response_text=response,
+            timestamp=datetime.utcnow().isoformat(),
+            prompt_type='model'
+        )
+        self.traces.append(trace)
+        logger.debug(f"Recorded model prompt trace: {model}-{instance} iteration {iteration}")
+        
+    def record_arbiter_prompt(self, iteration: int, prompt: str, response: str) -> None:
+        """Record a prompt sent to the arbiter"""
+        trace = PromptTrace(
+            trace_id=self.trace_id,
+            iteration=iteration,
+            model='arbiter',
+            instance=0,
+            prompt_text=prompt,
+            response_text=response,
+            timestamp=datetime.utcnow().isoformat(),
+            prompt_type='arbiter'
+        )
+        self.traces.append(trace)
+        logger.debug(f"Recorded arbiter prompt trace: iteration {iteration}")
+        
+    def save_to_db(self) -> None:
+        """Save all traces to database"""
+        db = DatabaseConnection.get_connection()
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS prompt_traces (
+                trace_id TEXT,
+                iteration INTEGER,
+                model TEXT,
+                instance INTEGER,
+                prompt_text TEXT,
+                response_text TEXT,
+                timestamp TEXT,
+                prompt_type TEXT,
+                PRIMARY KEY (trace_id, iteration, model, instance, prompt_type)
+            )
+        """)
+        
+        for trace in self.traces:
+            db["prompt_traces"].insert(trace.model_dump(), replace=True)
+        
+        logger.info(f"Saved {len(self.traces)} trace records with trace_id: {self.trace_id}")
+        
+    def export_to_dict(self) -> Dict[str, Any]:
+        """Export traces to a dictionary format"""
+        return {
+            "trace_id": self.trace_id,
+            "total_traces": len(self.traces),
+            "traces": [trace.model_dump() for trace in self.traces]
+        }
 
 # Read system prompt from file
 def _read_system_prompt() -> str:
@@ -187,6 +265,20 @@ class ConsortiumOrchestrator:
         self.model_conversations: Dict[str, llm.Conversation] = {}  # Key: f"{model_name}_{instance_id}"
         self.arbiter_conversation: Optional[llm.Conversation] = None
         self.manual_context = config.manual_context
+        self.tracer: Optional[PromptTracer] = None
+
+    def enable_tracing(self, trace_id: Optional[str] = None) -> str:
+        """Enable prompt tracing and return the trace ID"""
+        self.tracer = PromptTracer(trace_id)
+        logger.info(f"Prompt tracing enabled with trace_id: {self.tracer.trace_id}")
+        return self.tracer.trace_id
+
+    def disable_tracing(self) -> None:
+        """Disable prompt tracing"""
+        if self.tracer:
+            self.tracer.save_to_db()
+        self.tracer = None
+        logger.info("Prompt tracing disabled")
 
     def _get_model_conversation(self, model_name: str, instance_id: int) -> Optional[llm.Conversation]:
         """Get or create a conversation for a specific model instance with error handling."""
@@ -301,6 +393,10 @@ class ConsortiumOrchestrator:
                 "raw_arbiter_response": raw_arbiter_response_final
             }
 
+        # Save traces if enabled
+        if self.tracer:
+            self.tracer.save_to_db()
+
         return {
             "original_prompt": original_prompt,
             "model_responses_final_iteration": model_responses,
@@ -310,7 +406,8 @@ class ConsortiumOrchestrator:
                 "arbiter": self.arbiter,
                 "timestamp": datetime.utcnow().isoformat(),
                 "iteration_count": iteration_count,
-                "context_mode": "manual"
+                "context_mode": "manual",
+                "trace_id": self.tracer.trace_id if self.tracer else None
             }
         }
 
@@ -370,6 +467,10 @@ class ConsortiumOrchestrator:
                 "raw_arbiter_response": raw_arbiter_response_final
             }
 
+        # Save traces if enabled
+        if self.tracer:
+            self.tracer.save_to_db()
+
         return {
             "original_prompt": original_prompt,
             "model_responses_final_iteration": model_responses,
@@ -379,7 +480,8 @@ class ConsortiumOrchestrator:
                 "arbiter": self.arbiter,
                 "timestamp": datetime.utcnow().isoformat(),
                 "iteration_count": iteration_count,
-                "context_mode": "automatic"
+                "context_mode": "automatic",
+                "trace_id": self.tracer.trace_id if self.tracer else None
             }
         }
 
@@ -401,28 +503,25 @@ class ConsortiumOrchestrator:
     def _get_single_model_response_manual(self, model: str, prompt: str, instance: int) -> Dict[str, Any]:
         prompt_uuid = str(uuid.uuid4())
         
-        if model == 'test-model':
-            response = llm.Response.fake()
-            response._set_content('test response')
-            return {
-                "model": model,
-                "instance": instance + 1,
-                "response": 'test response',
-                "confidence": self._parse_confidence_value('test response'),
-                "uuid": prompt_uuid,
-            }
-        
         logger.debug(f"Getting manual response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
+        
+        xml_prompt = f"""<prompt>
+        <uuid>{prompt_uuid}</uuid>
+        <instruction>{prompt}</instruction>
+    </prompt>"""
+        
+        # Record prompt if tracing is enabled
+        iteration = len(self.iteration_history) + 1
+        if self.tracer:
+            # We'll record the response after getting it
+            pass
+        
         attempts = 0
         max_retries = 3
 
         while attempts < max_retries:
             try:
                 model_obj = llm.get_model(model)
-                xml_prompt = f"""<prompt>
-        <uuid>{prompt_uuid}</uuid>
-        <instruction>{prompt}</instruction>
-    </prompt>"""
 
                 alias_opts = resolve_alias_options(model)
                 if alias_opts and alias_opts.get("options"):
@@ -432,6 +531,11 @@ class ConsortiumOrchestrator:
 
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}")
+                
+                # Record trace if enabled
+                if self.tracer:
+                    self.tracer.record_model_prompt(iteration, model, instance + 1, xml_prompt, text)
+                
                 return {
                     "model": model,
                     "instance": instance + 1,
@@ -468,18 +572,13 @@ class ConsortiumOrchestrator:
     def _get_single_model_response_automatic(self, model: str, prompt: str, instance: int, iteration: int) -> Dict[str, Any]:
         prompt_uuid = str(uuid.uuid4())
         
-        if model == 'test-model':
-            response = llm.Response.fake()
-            response._set_content('test response')
-            return {
-                "model": model,
-                "instance": instance + 1,
-                "response": 'test response',
-                "confidence": self._parse_confidence_value('test response'),
-                "uuid": prompt_uuid,
-            }
-        
         logger.debug(f"Getting automatic response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
+        
+        xml_prompt = f"""<prompt>
+        <uuid>{prompt_uuid}</uuid>
+        <instruction>{prompt}</instruction>
+    </prompt>"""
+        
         attempts = 0
         max_retries = 3
 
@@ -489,11 +588,6 @@ class ConsortiumOrchestrator:
                 if conversation is None:
                     return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation.", "uuid": prompt_uuid}
 
-                xml_prompt = f"""<prompt>
-        <uuid>{prompt_uuid}</uuid>
-        <instruction>{prompt}</instruction>
-    </prompt>"""
-
                 alias_opts = resolve_alias_options(model)
                 if alias_opts and alias_opts.get("options"):
                     response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
@@ -502,6 +596,11 @@ class ConsortiumOrchestrator:
 
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}")
+                
+                # Record trace if enabled
+                if self.tracer:
+                    self.tracer.record_model_prompt(iteration, model, instance + 1, xml_prompt, text)
+                
                 return {
                     "model": model,
                     "instance": instance + 1,
@@ -566,6 +665,10 @@ class ConsortiumOrchestrator:
             response = arbiter_model.prompt(arbiter_prompt, stream=False)
             raw_arbiter_text = response.text()
             log_response(response, self.arbiter)
+            
+            # Record arbiter trace if enabled
+            if self.tracer:
+                self.tracer.record_arbiter_prompt(iteration, arbiter_prompt, raw_arbiter_text)
 
             try:
                 if self.judging_method == 'pick-one':
@@ -649,6 +752,10 @@ class ConsortiumOrchestrator:
             arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter)
+        
+        # Record arbiter trace if enabled
+        if self.tracer:
+            self.tracer.record_arbiter_prompt(iteration, arbiter_prompt, raw_arbiter_text)
 
         try:
             if self.judging_method == 'pick-one':
@@ -1144,7 +1251,9 @@ def register_commands(cli):
     @click.option("--raw", is_flag=True, default=False, help="Output raw arbiter response")
     @click.option("--judging-method", type=click.Choice(["default", "pick-one", "rank"], case_sensitive=False), default="default", help="Judging method")
     @click.option("--manual-context/--auto-context", default=False, help="Use manual context instead of conversations")
-    def run_command(prompt, models, count, arbiter, confidence_threshold, max_iterations, min_iterations, system, output, read_from_stdin, raw, judging_method, manual_context):
+    @click.option("--trace/--no-trace", default=False, help="Enable prompt tracing for debugging")
+    @click.option("--trace-id", help="Use specific trace ID (for continuing traces)")
+    def run_command(prompt, models, count, arbiter, confidence_threshold, max_iterations, min_iterations, system, output, read_from_stdin, raw, judging_method, manual_context, trace, trace_id):
         """Run prompt through a dynamically defined consortium of models."""
         # Generate consortium_id at the start
         consortium_id = secrets.token_hex(8)
@@ -1223,9 +1332,19 @@ def register_commands(cli):
                 manual_context=manual_context
             )
         )
+        
+        # Enable tracing if requested
+        actual_trace_id = None
+        if trace:
+            actual_trace_id = orchestrator.enable_tracing(trace_id)
+            logger.info(f"Prompt tracing enabled with ID: {actual_trace_id}")
 
         try:
             result = orchestrator.orchestrate(prompt, consortium_id=consortium_id)
+            
+            # Log trace ID if tracing was enabled
+            if trace:
+                click.echo(f"\n[Trace ID: {actual_trace_id}]", err=True)
 
             # Output full result to JSON file if requested
             if output:
@@ -1414,6 +1533,128 @@ def register_commands(cli):
         except Exception as e:
              # Catch potential database errors beyond NotFoundError
              raise click.ClickException(f"Error removing consortium '{name}': {e}")
+
+    @consortium.command(name="show-trace")
+    @click.argument("trace_id")
+    @click.option("--json-output", is_flag=True, help="Output as JSON")
+    @click.option("--iteration", type=int, help="Show only specific iteration")
+    def show_trace_command(trace_id, json_output, iteration):
+        """Display recorded prompt traces for debugging"""
+        db = DatabaseConnection.get_connection()
+        
+        # Check if table exists
+        if "prompt_traces" not in db.table_names():
+            raise click.ClickException("No traces found. Run with --trace to enable tracing.")
+        
+        # Build query using sqlite_utils table API
+        table = db["prompt_traces"]
+        where_clause = "trace_id = ?"
+        params = [trace_id]
+        
+        if iteration is not None:
+            where_clause += " AND iteration = ?"
+            params.append(iteration)
+        
+        # Use rows_where which returns dictionaries
+        traces = list(table.rows_where(
+            where_clause,
+            params,
+            order_by="iteration, prompt_type, model, instance"
+        ))
+        
+        if not traces:
+            raise click.ClickException(f"No traces found for trace_id: {trace_id}")
+        
+        if json_output:
+            output = {
+                "trace_id": trace_id,
+                "total_records": len(traces),
+                "traces": traces
+            }
+            click.echo(json.dumps(output, indent=2))
+        else:
+            click.echo(f"\n=== Prompt Trace: {trace_id} ===\n")
+            current_iteration = None
+            
+            for trace in traces:
+                if trace['iteration'] != current_iteration:
+                    current_iteration = trace['iteration']
+                    click.echo(f"\n--- Iteration {current_iteration} ---\n")
+                
+                click.echo(f"[{trace['prompt_type'].upper()}] {trace['model']}-{trace['instance']} @ {trace['timestamp']}")
+                click.echo(f"\nPrompt sent:\n{trace['prompt_text']}\n")
+                click.echo(f"Response received:\n{trace['response_text']}\n")
+                click.echo("=" * 80 + "\n")
+
+    @consortium.command(name="export-trace")
+    @click.argument("trace_id")
+    @click.argument("output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path))
+    def export_trace_command(trace_id, output):
+        """Export trace to a JSON file"""
+        db = DatabaseConnection.get_connection()
+        
+        # Use rows_where which returns dictionaries
+        table = db["prompt_traces"]
+        traces = list(table.rows_where(
+            "trace_id = ?",
+            [trace_id],
+            order_by="iteration, prompt_type, model, instance"
+        ))
+        
+        if not traces:
+            raise click.ClickException(f"No traces found for trace_id: {trace_id}")
+        
+        export_data = {
+            "trace_id": trace_id,
+            "exported_at": datetime.utcnow().isoformat(),
+            "total_records": len(traces),
+            "traces": traces
+        }
+        
+        try:
+            with output.open('w') as f:
+                json.dump(export_data, f, indent=2)
+            click.echo(f"Trace exported to {output}")
+        except Exception as e:
+            raise click.ClickException(f"Error exporting trace: {e}")
+
+    @consortium.command(name="list-traces")
+    @click.option("--limit", type=int, default=10, help="Maximum number of traces to show")
+    def list_traces_command(limit):
+        """List recent trace IDs"""
+        db = DatabaseConnection.get_connection()
+        
+        if "prompt_traces" not in db.table_names():
+            click.echo("No traces found. Run with --trace to enable tracing.")
+            return
+        
+        # Use raw SQL with proper conversion to dict
+        query = """
+            SELECT trace_id, MIN(timestamp) as first_trace, COUNT(*) as record_count
+            FROM prompt_traces
+            GROUP BY trace_id
+            ORDER BY first_trace DESC
+            LIMIT ?
+        """
+        # Execute and convert rows to dicts manually
+        cursor = db.execute(query, [limit])
+        traces = []
+        for row in cursor.fetchall():
+            traces.append({
+                "trace_id": row[0],
+                "first_trace": row[1],
+                "record_count": row[2]
+            })
+        
+        if not traces:
+            click.echo("No traces found.")
+            return
+        
+        click.echo("\nRecent Traces:\n")
+        for trace in traces:
+            click.echo(f"Trace ID: {trace['trace_id']}")
+            click.echo(f"  First recorded: {trace['first_trace']}")
+            click.echo(f"  Total records: {trace['record_count']}\n")
 
 
 @llm.hookimpl
