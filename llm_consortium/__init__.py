@@ -10,13 +10,12 @@ import re
 import os
 import pathlib
 import sqlite_utils
-from .conversation_manager import ConversationManager, ConsortiumResponse
 from pydantic import BaseModel, Field
 import time  # added import for time
 import concurrent.futures  # Add concurrent.futures for parallel processing
 import threading  # Add threading for thread-local storage
 import secrets
-import uuid  # Add uuid import
+import uuid  # Keep this for PromptTracer only
 
 class PromptTrace(BaseModel):
     """Model for storing prompt trace information"""
@@ -33,7 +32,7 @@ class PromptTracer:
     """Manages tracing of prompts through consortium iterations"""
     
     def __init__(self, trace_id: Optional[str] = None):
-        self.trace_id = trace_id or str(uuid.uuid4())
+        self.trace_id = trace_id or str(uuid.uuid4())  # uuid is still needed here
         self.traces: List[PromptTrace] = []
         
     def record_model_prompt(self, iteration: int, model: str, instance: int, 
@@ -501,12 +500,9 @@ class ConsortiumOrchestrator:
         return responses
 
     def _get_single_model_response_manual(self, model: str, prompt: str, instance: int) -> Dict[str, Any]:
-        prompt_uuid = str(uuid.uuid4())
-        
-        logger.debug(f"Getting manual response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
+        logger.debug(f"Getting manual response from model: {model} instance {instance + 1}")
         
         xml_prompt = f"""<prompt>
-        <uuid>{prompt_uuid}</uuid>
         <instruction>{prompt}</instruction>
     </prompt>"""
         
@@ -541,7 +537,6 @@ class ConsortiumOrchestrator:
                     "instance": instance + 1,
                     "response": text,
                     "confidence": self._parse_confidence_value(text),
-                    "uuid": prompt_uuid,
                 }
             except Exception as e:
                 if "RateLimitError" in str(e):
@@ -551,8 +546,8 @@ class ConsortiumOrchestrator:
                     time.sleep(wait_time)
                 else:
                     logger.exception(f"Error getting manual response from {model} instance {instance + 1}")
-                    return {"model": model, "instance": instance + 1, "error": str(e), "uuid": prompt_uuid}
-        return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries.", "uuid": prompt_uuid}
+                    return {"model": model, "instance": instance + 1, "error": str(e)}
+        return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries."}
 
     def _get_model_responses_automatic(self, prompt: str, iteration: int) -> List[Dict[str, Any]]:
         responses = []
@@ -570,12 +565,9 @@ class ConsortiumOrchestrator:
         return responses
 
     def _get_single_model_response_automatic(self, model: str, prompt: str, instance: int, iteration: int) -> Dict[str, Any]:
-        prompt_uuid = str(uuid.uuid4())
-        
-        logger.debug(f"Getting automatic response from model: {model} instance {instance + 1} with UUID: {prompt_uuid}")
+        logger.debug(f"Getting automatic response from model: {model} instance {instance + 1}")
         
         xml_prompt = f"""<prompt>
-        <uuid>{prompt_uuid}</uuid>
         <instruction>{prompt}</instruction>
     </prompt>"""
         
@@ -586,7 +578,7 @@ class ConsortiumOrchestrator:
             try:
                 conversation = self._get_model_conversation(model, instance + 1)
                 if conversation is None:
-                    return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation.", "uuid": prompt_uuid}
+                    return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation."}
 
                 alias_opts = resolve_alias_options(model)
                 if alias_opts and alias_opts.get("options"):
@@ -606,7 +598,6 @@ class ConsortiumOrchestrator:
                     "instance": instance + 1,
                     "response": text,
                     "confidence": self._parse_confidence_value(text),
-                    "uuid": prompt_uuid,
                 }
             except Exception as e:
                 if "RateLimitError" in str(e):
@@ -616,24 +607,8 @@ class ConsortiumOrchestrator:
                     time.sleep(wait_time)
                 else:
                     logger.exception(f"Error getting response from {model} instance {instance + 1}")
-                    return {"model": model, "instance": instance + 1, "error": str(e), "uuid": prompt_uuid}
-        return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries.", "uuid": prompt_uuid}
-
-    def _get_model_responses(self, prompt: str) -> List[Dict[str, Any]]:
-        # This method is now a dispatcher
-        if self.manual_context:
-            return self._get_model_responses_manual(prompt)
-        else:
-            current_iteration = len(self.iteration_history) + 1
-            return self._get_model_responses_automatic(prompt, current_iteration)
-
-    def _get_model_response(self, model: str, prompt: str, instance: int, consortium_id: Optional[str] = None) -> Dict[str, Any]:
-        # This method is now deprecated - redirect to appropriate method
-        if self.manual_context:
-            return self._get_single_model_response_manual(model, prompt, instance)
-        else:
-            current_iteration = len(self.iteration_history) + 1
-            return self._get_single_model_response_automatic(model, prompt, instance, current_iteration)
+                    return {"model": model, "instance": instance + 1, "error": str(e)}
+        return {"model": model, "instance": instance + 1, "error": "Rate limit exceeded after retries."}
 
     def _synthesize_responses_manual(self, original_prompt: str, responses: List[Dict[str, Any]], manual_history: List[str], iteration: int) -> Dict[str, Any]:
         logger.debug("Synthesizing responses in manual mode")
@@ -710,7 +685,6 @@ class ConsortiumOrchestrator:
         if not valid_responses:
             return {"synthesis": "Error: No valid responses.", "confidence": 0.0, "analysis": "All model responses failed.", "dissent": "", "needs_iteration": False, "refinement_areas": [], "raw_arbiter_response": ""}
 
-        # In automatic mode, DO NOT inject formatted history - let conversation object handle it
         formatted_responses = self._format_responses(valid_responses)
         user_instructions = self.system_prompt or ""
 
@@ -721,17 +695,7 @@ class ConsortiumOrchestrator:
         else:
             arbiter_prompt_template = _read_arbiter_prompt()
 
-        # Remove {formatted_history} placeholder from template in auto mode
-        # The conversation object will provide historical context automatically
-        arbiter_prompt_template = arbiter_prompt_template.replace("{formatted_history}", "")
-        
-        # Only include current iteration's essential context
-        arbiter_prompt = arbiter_prompt_template.format(
-            original_prompt=original_prompt,
-            formatted_responses=formatted_responses,
-            user_instructions=user_instructions
-        )
-
+        # Get or create arbiter conversation
         arbiter_conversation = self._get_arbiter_conversation()
         if arbiter_conversation is None:
             logger.error("Failed to initialize arbiter conversation.")
@@ -744,6 +708,29 @@ class ConsortiumOrchestrator:
                 "refinement_areas": [],
                 "raw_arbiter_response": "Error initializing arbiter conversation."
             }
+
+        # Determine if this is the first iteration by checking conversation history
+        is_first_iteration = len(arbiter_conversation.responses) == 0
+        
+        if is_first_iteration:
+            # First iteration: include full context with original prompt and instructions
+            # Provide empty formatted_history since conversation object manages history
+            arbiter_prompt = arbiter_prompt_template.format(
+                original_prompt=original_prompt,
+                formatted_responses=formatted_responses,
+                user_instructions=user_instructions,
+                formatted_history=""  # Empty on first iteration, conversation manages history
+            )
+            logger.debug("First arbiter iteration - sending full prompt with original request")
+        else:
+            # Subsequent iterations: only send new responses
+            # The conversation history already contains the original prompt and instructions
+            arbiter_prompt = f"""Here are the refined responses from the models:
+
+{formatted_responses}
+
+Please evaluate these new responses based on the original prompt and your previous feedback."""
+            logger.debug(f"Subsequent arbiter iteration {iteration} - sending only new responses")
 
         alias_opts = resolve_alias_options(self.arbiter)
         if alias_opts and alias_opts.get("options"):
@@ -778,17 +765,6 @@ class ConsortiumOrchestrator:
                 "refinement_areas": [],
                 "raw_arbiter_response": raw_arbiter_text
             }
-
-    def _synthesize_responses(self, original_prompt: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        # This method is now a dispatcher
-        if self.manual_context:
-            manual_history = []
-            for iteration in self.iteration_history:
-                manual_history.append(f"Human: {original_prompt}")
-                manual_history.append(f"Assistant: {iteration.synthesis.get('synthesis', '')}")
-            return self._synthesize_responses_manual(original_prompt, responses, manual_history, len(self.iteration_history) + 1)
-        else:
-            return self._synthesize_responses_automatic(original_prompt, responses, len(self.iteration_history) + 1)
 
     def _format_iteration_history(self) -> str:
         history = []

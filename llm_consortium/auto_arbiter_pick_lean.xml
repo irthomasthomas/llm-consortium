@@ -1,0 +1,5 @@
+<arbiter_prompt>
+<instruction>Select the single best response from:</instruction>
+{formatted_responses}
+<choice_format>Reply with: &lt;response_id&gt;X&lt;/response_id&gt;</choice_format>
+</arbiter_prompt>

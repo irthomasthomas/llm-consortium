@@ -1,0 +1,5 @@
+<arbiter_prompt>
+<instruction>Rank these responses from best to worst:</instruction>
+{formatted_responses}
+<ranking_format>Reply with: &lt;ranking&gt;&lt;rank position="1"&gt;id&lt;/rank&gt;...&lt;/ranking&gt;</ranking_format>
+</arbiter_prompt>
