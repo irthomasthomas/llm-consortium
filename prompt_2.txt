@@ -1,0 +1,561 @@
+ # LLM Consortium Tracing & Logging Infrastructure
+
+## Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [Architecture Overview](#architecture-overview)
+3. [Model Configuration](#model-configuration)
+4. [Installation & Setup](#installation--setup)
+5. [Usage Guide](#usage-guide)
+6. [Testing & Verification](#testing--verification)
+7. [Expected Output](#expected-output)
+8. [Troubleshooting](#troubleshooting)
+9. [Version Information](#version-information)
+
+---
+
+## Executive Summary
+
+The LLM Consortium tracing and logging infrastructure provides comprehensive observability for multi-model prompt execution workflows. Implemented in November 2025, this system addresses critical gaps in debugging, performance analysis, and evaluation tracking for consortium-based AI applications.
+
+**What was implemented:**
+- **Correlation ID System**: Automatically tracks consortium runs, requests, iterations, and model calls across distributed execution
+- **Structured JSON Logging**: Machine-parseable logs with consistent schemas for integration with ELK, Splunk, or custom analytics pipelines
+- **Performance Metrics**: Token usage and latency tracking per model to enable cost optimization
+- **Evaluation Store**: SQLite-based persistence layer for arbiter decisions, supporting leaderboard generation, A/B testing, and training data creation
+
+**Key benefits:**
+- **Debugability**: Trace any consortium execution from start to finish in under 2 minutes
+- **Cost Optimization**: Identify token-inefficient models and optimize routing decisions
+- **Model Evaluation**: Build leaderboards and compare model performance automatically
+- **Training Data**: Export arbiter evaluations as JSONL for fine-tuning custom models
+
+---
+
+## Architecture Overview
+
+### Component Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Consortium Orchestrator                 │
+│                                                             │
+│  ┌──────────────────┐      ┌──────────────────┐           │
+│  │ Model Worker 1   │      │ Model Worker 2   │           │
+│  │ (glm-4.6)        │      │ (k2)             │           │
+│  └────────┬─────────┘      └────────┬─────────┘           │
+│           │                        │                       │
+└───────────┼────────────────────────┼───────────────────────┘
+            │                        │
+            ▼                        ▼
+┌─────────────────────────────────────────────────────────────┐
+│               Tracing & Logging Layer                       │
+│                                                             │
+│  ┌──────────────────┐      ┌──────────────────┐           │
+│  │ Correlation IDs  │      │  Metrics         │           │
+│  │ (contextvars)    │      │  Aggregation     │           │
+│  └────────┬─────────┘      └────────┬─────────┘           │
+│           │                        │                       │
+└───────────┼────────────────────────┼───────────────────────┘
+            │                        │
+            ▼                        ▼
+┌──────────────────┐        ┌──────────────────┐
+│ Logger           │        │ Evaluation Store │
+│ (JSONFormatter)  │        │ (SQLite)         │
+└────────┬─────────┘        └────────┬─────────┘
+         │                          │
+         ▼                          ▼
+┌─────────────────┐       ┌──────────────────┐
+│ Console/Files   │       │ analytics.db     │
+│ Dashboards      │       │                  │
+└─────────────────┘       └──────────────────┘
+```
+
+### Data Flow
+
+1. **Consortium Initialization**: `consortium_context()` creates a unique `consortium_id` and starts metrics collection
+2. **Model Execution**: Each model call wraps in `request_context()` + `model_context()` to track latency and tokens
+3. **Arbiter Evaluation**: Arbiter decision logged with `log_arbiter_decision()` and stored in SQLite with full context
+4. **Analysis**: CLI queries the evaluation store to generate leaderboards, export training data, or show run details
+
+### Core Modules
+
+**tracing.py**: Manages correlation context
+- `TracingContext` class aggregates metrics per run
+- Context variables enable automatic propagation without explicit parameter passing
+- UUID-based IDs ensure uniqueness across distributed executions
+
+**logger.py**: Structured logging with context injection
+- `StructuredLogger` wraps Python's logging with JSON formatting
+- Automatically extracts correlation IDs from context variables
+- Provides specialized methods for model calls and arbiter decisions
+
+**evaluation_store.py**: SQLite persistence layer
+- Schema optimized for leaderboard queries and training data export
+- Indexes on consortium_id, timestamp, and confidence
+- Atomic transactions ensure consistency
+
+---
+
+## Model Configuration
+
+The tracing system works with any model available through the `llm` plugin system. Below are commonly used models with their configurations:
+
+| Model Code | Provider | Full Name | Description/Use Case |
+|------------|----------|-----------|---------------------|
+| glm-4.6 | chutes/zai-org | GLM-4.6 | General-purpose reasoning and conversation. Good balance of speed and quality for most tasks. |
+| k2 | chutes/moonshotai | Kimi-K2-Instruct-0905 | High-performance instruction-following model. Excellent for complex reasoning and multi-step tasks. |
+| k2-t1 | chutes/moonshotai | Kimi-K2-Instruct-0905 | **Suffix meaning**: -t1 indicates lower temperature (0.1-0.3) for more deterministic, factual responses. Same base model as k2. |
+| qwen3-235b | chutes/Qwen | Qwen3-235B-A22B-Instruct-2507 | Large MoE model (235B total, 22B active). Best for creative writing and open-ended generation. |
+| deepseek-3.1-terminus | chutes/deepseek-ai | DeepSeek-V3.1-Terminus | Specialized for code generation and technical documentation. Strong mathematical reasoning. |
+| qwen3-coder | chutes/Qwen | Qwen3-Coder-480B-A35B-Instruct-FP8 | **Code-optimized**: 480B parameters with 35B active. Superior for programming tasks and code review. |
+| longcat | chutes/meituan-longcat | LongCat-Flash-Chat-FP8 | **Long-context specialist**: 256K token context window. Ideal for document analysis and RAG applications. |
+| deepseek-3.2exp | chutes/deepseek-ai | DeepSeek-V3.2-Exp | **Experimental**: Bleeding-edge features, may have higher variance. For testing new capabilities. |
+| gpt-120b | chutes/openai | gpt-oss-120b | Open-source GPT variant. Good general performance, moderate resource requirements. |
+| qwen3-235b-think | chutes/Qwen | Qwen3-235B-A22B-Thinking-2507 | **Thinking mode**: Internal reasoning before responding. Better for complex problem-solving. |
+| k2-think | chutes/moonshotai | Kimi-K2-Thinking | Kimi's thinking variant. Strong logical reasoning and step-by-step analysis. |
+| k2-think-t1 | chutes/moonshotai | Kimi-K2-Thinking | **Think mode + low temp**: Combines reasoning with deterministic output. Best for factual queries requiring analysis. |
+| minimax-m2 | chutes/MiniMaxAI | MiniMax-M2 | Specialized in Chinese language tasks and cultural context understanding. |
+| m2-t1 | chutes/MiniMaxAI | MiniMax-M2 | **Low temperature** version for factual Chinese content. |
+| qwen3-vl-235b-think | chutes/Qwen | Qwen3-VL-235B-A22B-Thinking | **Vision + Thinking**: Multimodal reasoning. Processes images with analytical depth. |
+| qwen3-vl-235b | chutes/Qwen | Qwen3-VL-235B-A22B-Instruct | **Vision model**: Image understanding integrated with instruction following. |
+
+**Key Notes:**
+- **-t1 suffix**: Lower temperature (0.1-0.3) for deterministic, factual responses
+- **-think suffix**: Internal reasoning chain before final answer
+- **-vl suffix**: Vision-language capabilities (image + text)
+
+## Installation & Setup
+
+### Dependencies
+
+Add to `requirements.txt`:
+```txt
+fastapi>=0.115.0
+uvicorn>=0.32.0
+pydantic>=2.9.0
+colorama>=0.4.6
+python-json-logger>=2.0.0
+llm>=0.17.0
+```
+
+Install with pip:
+```bash
+pip install -r requirements.txt
+```
+
+### Configuration
+
+Set up the evaluation database:
+```bash
+# The system automatically creates ~/.llm_consortium/evaluations.db
+# No manual setup required
+```
+
+### Environment Setup
+
+Configure your LLM provider API keys:
+```bash
+export OPENAI_API_KEY="your-key-here"
+export ANTHROPIC_API_KEY="your-key-here"
+# Or configure via Chutes/llm CLI
+```
+
+Enable logging:
+```bash
+# Set log level (DEBUG, INFO, WARNING, ERROR)
+export LLM_CONSORTIUM_LOG_LEVEL="INFO"
+```
+
+## Usage Guide
+
+### Basic Usage Example
+
+```python
+from llm_consortium import create_consortium
+from llm_consortium.tracing import consortium_context
+from llm_consortium.evaluation_store import EvaluationStore
+
+# Create a consortium with 2 instances each of glm-4.6 and k2
+consortium = create_consortium(
+    models=["glm-4.6:2", "k2:3"],
+    arbiter="k2-think",
+    judging_method="default"
+)
+
+# Run with tracing enabled
+with consortium_context() as ctx:
+    result = consortium.orchestrate(
+        prompt="Explain quantum entanglement in simple terms",
+        enable_tracing=True
+    )
+    
+    print(f"Consortium ID: {ctx.consortium_id}")
+    print(f"Total tokens: {ctx.metrics['total_tokens']}")
+    print(f"Final confidence: {result['synthesis']['confidence']}")
+
+# View leaderboard
+store = EvaluationStore()
+leaderboard = store.get_leaderboard(limit=10)
+for entry in leaderboard:
+    print(f"{entry['model']}: {entry['avg_confidence']:.3f}")
+```
+
+### CLI Command Reference
+
+```bash
+# Run consortium with tracing
+llm consortium run -m glm-4.6:2 -m k2:2 "Your prompt" --trace
+
+# View model performance leaderboard
+llm consortium leaderboard --limit 10
+
+# Export training data for fine-tuning
+llm consortium export-training training-data.jsonl --since "2025-01-01"
+
+# View recent consortium runs
+llm consortium runs --limit 5
+
+# Get detailed run information
+llm consortium run-info cons-abc123def456
+
+# Filter by date range
+llm consortium leaderboard --since "2025-11-01"
+```
+
+### Common Workflows
+
+**Workflow 1: Debug a Failed Run**
+```bash
+# Run with debug logging
+LLM_CONSORTIUM_LOG_LEVEL=DEBUG llm consortium run -m glm-4.6 "test" --trace 2>&1 | jq .
+
+# Find the consortium_id in the logs
+# Then inspect the evaluation store
+sqlite3 ~/.llm_consortium/evaluations.db \
+  "SELECT * FROM evaluations WHERE consortium_id='cons-xyz';"
+```
+
+**Workflow 2: Compare Models**
+```bash
+# Run same prompt across different models
+llm consortium run -m glm-4.6 -m k2 -m qwen3-235b "Complex reasoning task"
+
+# View comparative leaderboard
+llm consortium leaderboard
+```
+
+**Workflow 3: Generate Training Data**
+```bash
+# Run through evaluation prompts
+llm consortium run -m glm-4.6:2 -m k2:2 --max-iterations 3 < prompts.txt
+
+# Export as training data
+llm consortium export-training /tmp/training.jsonl
+
+# Use for fine-tuning
+llm train --data /tmp/training.jsonl --model your-model
+```
+
+## Testing & Verification
+
+### Unit Tests
+
+Test individual modules:
+```bash
+# Test tracing context
+python3 -c "
+from llm_consortium.tracing import consortium_context
+with consortium_context() as ctx:
+    assert ctx.consortium_id is not None
+    print('✅ Tracing context works')
+"
+
+# Test structured logging
+python3 -c "
+from llm_consortium.logger import StructuredLogger
+logger = StructuredLogger('test')
+logger.info('Test', event_type='test')
+print('✅ Logger works')
+"
+
+# Test evaluation store
+python3 -c "
+from llm_consortium.evaluation_store import EvaluationStore
+store = EvaluationStore(':memory:')
+print('✅ Evaluation store works')
+"
+```
+
+### Integration Tests
+
+Test full workflow:
+```bash
+cat > test_integration.py << 'EOF'
+from llm_consortium.tracing import consortium_context
+from llm_consortium.logger import StructuredLogger
+from llm_consortium.evaluation_store import EvaluationStore
+
+# Complete workflow test
+with consortium_context() as ctx:
+    logger = StructuredLogger("test")
+    store = EvaluationStore(":memory:")
+    
+    # Simulate model calls
+    for model in ["gpt-4", "claude-3"]:
+        ctx.add_tokens(model, 150)
+        ctx.increment_model_calls()
+        logger.log_model_call(model, "prompt", "response", 150, 1200, 0.85)
+    
+    # Store evaluation
+    store.store_evaluation(
+        consortium_id=ctx.consortium_id,
+        iteration_id=1,
+        prompt_text="Test",
+        arbiter_model="test",
+        evaluated_models=["gpt-4", "claude-3"],
+        decision={"confidence": 0.92, "synthesis": "OK"},
+        token_usage=ctx.token_usage,
+        duration_ms=1000
+    )
+    
+    # Verify leaderboard
+    leaderboard = store.get_leaderboard()
+    assert len(leaderboard) == 2
+    print(f"✅ Integration test passed: {leaderboard[0]['model']}")
+
+EOF
+
+python3 test_integration.py
+```
+
+### Manual Validation
+
+**Step 1: Run consortium with tracing**
+```bash
+# Run with trace flag
+llm consortium run -m glm-4.6 -m k2 "Test prompt" --trace
+
+# Expected output includes:
+# Consortium ID: cons-550e8400e29b41d4
+# Trace ID: trace-abc123...
+```
+
+**Step 2: Verify logs contain correlation IDs**
+```bash
+# Check structured logs
+cat ~/.llm/consortium.log | grep "consortium_id" | jq .
+
+# Expected: JSON objects with consortium_id, request_id, etc.
+```
+
+**Step 3: Check database entries**
+```bash
+# Query the evaluation store
+sqlite3 ~/.llm_consortium/evaluations.db \
+  "SELECT consortium_id, iteration_id, confidence FROM evaluations;"
+
+# Expected: Rows with consortium IDs and confidence scores
+```
+
+**Step 4: Verify leaderboard**
+```bash
+# Generate leaderboard
+llm consortium leaderboard --limit 5
+
+# Expected output with model rankings
+```
+
+**Step 5: Export and verify training data**
+```bash
+# Export training data
+llm consortium export-training /tmp/test_training.jsonl
+
+# Verify format
+head -n 1 /tmp/test_training.jsonl | jq .
+
+# Expected: {"prompt": "...", "chosen": "...", "analysis": "..."}
+```
+
+## Expected Output
+
+### Sample Structured Log Entry
+
+```json
+{
+  "timestamp": "2025-11-11T20:46:32",
+  "name": "llm_consortium.orchestrator",
+  "levelname": "INFO",
+  "message": "Model call: glm-4.6 (150 tokens, 1245.30ms)",
+  "consortium_id": "cons-550e8400e29b41d4",
+  "request_id": "req-abc123def456",
+  "iteration_id": 1,
+  "model_id": "glm-4.6",
+  "duration_ms": 1245.3,
+  "tokens": 150,
+  "confidence": 0.85,
+  "event_type": "model_call",
+  "prompt_preview": "Explain quantum entanglement...",
+  "response_preview": "Quantum entanglement is a phenomenon..."
+}
+```
+
+### Sample Leaderboard Output
+
+```
+╔══════════════════════════════════════════════════════════════════╗
+║                    MODEL PERFORMANCE LEADERBOARD                ║
+╠══════════════════════════════════════════════════════════════════╣
+║ Model               │ Evaluations │ Avg Confidence │ Avg Tokens  ║
+╠═════════════════════╪═════════════╪════════════════╪═════════════╣
+║ k2-think-t1         │ 152         │ 0.923          │ 187         ║
+║ glm-4.6             │ 145         │ 0.901          │ 164         ║
+║ qwen3-235b-think    │ 138         │ 0.889          │ 203         ║
+║ k2                  │ 156         │ 0.874          │ 156         ║
+║ deepseek-3.1-term   │ 129         │ 0.862          │ 142         ║
+╚═════════════════════╧═════════════╧════════════════╧═════════════╝
+```
+
+### Sample Training Data Export
+
+```jsonl
+{"prompt": "Explain the concept of quantum superposition", "chosen": "Quantum superposition is the principle that a quantum system can exist in multiple states simultaneously...", "analysis": "The response correctly explains superposition with examples and appropriate technical depth.", "models_evaluated": ["glm-4.6", "k2-think"], "arbiter_confidence": 0.92}
+{"prompt": "Write a Python function to reverse a linked list", "chosen": "def reverse_linked_list(head):
+    prev = None
+    current = head
+    while current:
+        next_node = current.next
+        current.next = prev
+        prev = current
+        current = next_node
+    return prev", "analysis": "Clear, correct implementation with proper explanation of pointers.", "models_evaluated": ["qwen3-coder", "deepseek-3.1-terminus"], "arbiter_confidence": 0.89}
+```
+
+## Troubleshooting
+
+### Common Issues
+
+**Issue 1: "No module named 'llm'"**
+```bash
+# Solution: Install llm package
+pip install llm
+# Then install consortium plugin
+llm install llm-consortium
+```
+
+**Issue 2: "Database is locked"**
+```bash
+# Solution: Ensure no other process is accessing the DB
+lsof ~/.llm_consortium/evaluations.db
+# Kill any hanging processes
+```
+
+**Issue 3: Logs not appearing in JSON format**
+```bash
+# Solution: Check python-json-logger is installed
+pip install python-json-logger>=2.0.0
+# Verify imports in logger.py
+```
+
+**Issue 4: Missing correlation IDs in logs**
+```bash
+# Solution: Ensure context manager is properly used
+# All consortium execution must be wrapped with consortium_context()
+```
+
+**Issue 5: Slow leaderboard generation**
+```bash
+# Solution: Add index to your query or use --since flag
+llm consortium leaderboard --since "2025-11-01"
+```
+
+### Debug Mode
+
+Enable debug logging for detailed execution trace:
+```bash
+# Set debug level
+export LLM_CONSORTIUM_LOG_LEVEL=DEBUG
+
+# Run with trace
+llm consortium run -m glm-4.6 "test" --trace 2>&1 | jq '.'
+```
+
+### Log Analysis Tips
+
+**Filter by consortium ID:**
+```bash
+cat ~/.llm/consortium.log | jq 'select(.consortium_id == "cons-xyz")'
+```
+
+**Find slow model calls:**
+```bash
+cat ~/.llm/consortium.log | jq 'select(.event_type == "model_call" and .duration_ms > 2000)'
+```
+
+**Check for errors:**
+```bash
+cat ~/.llm/consortium.log | jq 'select(.event_type == "model_error")'
+```
+
+### Database Analysis
+
+**Most confident model:**
+```sql
+sqlite3 ~/.llm_consortium/evaluations.db \
+  "SELECT model, AVG(confidence) as avg_conf 
+   FROM model_performance 
+   GROUP BY model 
+   ORDER BY avg_conf DESC 
+   LIMIT 1;"
+```
+
+**Token usage by model:**
+```sql
+sqlite3 ~/.llm_consortium/evaluations.db \
+  "SELECT model, SUM(token_usage) as total_tokens 
+   FROM model_performance 
+   GROUP BY model;"
+```
+
+**Recent failed evaluations:**
+```sql
+sqlite3 ~/.llm_consortium/evaluations.db \
+  "SELECT consortium_id, iteration_id, error 
+   FROM evaluations 
+   WHERE error IS NOT NULL 
+   ORDER BY timestamp DESC 
+   LIMIT 10;"
+```
+
+## Version Information
+
+- **Document Version**: 1.0.0
+- **Implementation Date**: 2025-11-11
+- **Compatible With**: llm-consortium v0.3.2+
+- **Required Dependencies**: 
+  - python-json-logger>=2.0.0
+  - llm>=0.17.0
+  - sqlite3 (stdlib)
+
+### Changelog
+
+**v1.0.0** (2025-11-11):
+- Initial implementation of tracing and logging infrastructure
+- Added correlation ID system with contextvars
+- Implemented structured JSON logging
+- Created evaluation store with SQLite persistence
+- Added leaderboard generation and training data export
+- Integrated CLI commands for analysis
+
+### Upcoming Features
+
+ Planned for v1.1.0:
+- Real-time metrics dashboard
+- Advanced filtering for leaderboard queries
+- Support for custom evaluation metrics
+- Integration with external monitoring tools (Prometheus, Grafana)
+- Batch evaluation processing
+
+---
+
+For issues or questions, please open an issue on the llm-consortium repository.
