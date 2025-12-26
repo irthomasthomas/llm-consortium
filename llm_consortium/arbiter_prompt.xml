@@ -63,6 +63,10 @@ After your thought process, provide your synthesized output using the following 
     <needs_iteration>
         [Indicate whether further iteration is needed. Use "true" if more refinement is necessary, or "false" if the current synthesis is sufficient.]
     </needs_iteration>
+
+    <ranking>
+        [Rank all responses from best to worst by their ID. Format: <rank position="1">ID</rank>, <rank position="2">ID</rank>, etc.]
+    </ranking>
 </synthesis_output>
 
 Remember to maintain objectivity and consider all perspectives fairly in your analysis and synthesis. 

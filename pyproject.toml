@@ -35,6 +35,5 @@ llm_consortium = [
     "system_prompt.xml",
     "arbiter_prompt.xml",
     "iteration_prompt.xml",
-    "rank_prompt.xml",
-    "pick_one_prompt.xml"
+    "rank_prompt.xml"
 ]

@@ -1,22 +1,13 @@
 <rank_prompt>
-    <user_instructions>{user_instructions}</user_instructions>
-    <original_prompt>{original_prompt}</original_prompt>
-    <model_responses>
-        {formatted_responses}
-    </model_responses>
+<original_prompt>{original_prompt}</original_prompt>
+<model_responses>
+{formatted_responses}
+</model_responses>
 </rank_prompt>
 
-Your task is to act as a judge. You will be given an original prompt and a list of responses from different models. Your goal is to rank all responses from best to worst based on quality, correctness, and adherence to the prompt's instructions.
-
-Do not synthesize a new response. Do not explain your rankings.
-
-Review the responses and order them from highest quality to lowest quality.
-
-Output your decision in the following format, and nothing else:
+Rank all responses from best to worst. Output only:
 
 <ranking>
-    <rank position="1">[ID of best response]</rank>
-    <rank position="2">[ID of second best response]</rank>
-    <rank position="3">[ID of third best response]</rank>
-    <!-- Continue for all responses -->
+<rank position="1">[ID of best response]</rank>
+<rank position="2">[ID of second best]</rank>
 </ranking>

@@ -1,7 +1,7 @@
 import click
 import json
 import llm
-from llm.cli import load_conversation, resolve_alias_options  # Import from llm.cli instead of llm
+from llm.cli import load_conversation
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import logging
@@ -16,6 +16,20 @@ import concurrent.futures  # Add concurrent.futures for parallel processing
 import threading  # Add threading for thread-local storage
 import secrets
 import uuid  # Keep this for PromptTracer only
+
+
+def resolve_alias_options(model_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Stub function for resolve_alias_options.
+    
+    The original llm version this plugin was developed for had a resolve_alias_options
+    function that would return model options configured via aliases. The current llm
+    version does not support this feature, so this returns None.
+    
+    Future enhancement: Read from a consortium-specific options config file.
+    """
+    return None
+
 
 class PromptTrace(BaseModel):
     """Model for storing prompt trace information"""
@@ -125,15 +139,6 @@ def _read_iteration_prompt() -> str:
         return ""
 
 
-def _read_pick_one_prompt() -> str:
-    try:
-        file_path = pathlib.Path(__file__).parent / "pick_one_prompt.xml"
-        with open(file_path, "r") as f:
-            return f.read().strip()
-    except Exception as e:
-        logger.error(f"Error reading pick_one_prompt.xml file: {e}")
-        return ""
-
 def _read_rank_prompt() -> str:
     try:
         file_path = pathlib.Path(__file__).parent / "rank_prompt.xml"
@@ -152,7 +157,7 @@ def user_dir() -> pathlib.Path:
 
 def logs_db_path() -> pathlib.Path:
     """Get path to logs database."""
-    return user_dir() / "logs.db"
+    return user_dir() / "consortium_logs.db"
 
 def setup_logging() -> None:
     """Configure logging to write to both file and console."""
@@ -188,7 +193,10 @@ class DatabaseConnection:
     def get_connection(cls) -> sqlite_utils.Database:
         """Get thread-local database connection to ensure thread safety."""
         if not hasattr(cls._thread_local, 'db'):
-            cls._thread_local.db = sqlite_utils.Database(logs_db_path())
+            # Use timeout=30 to wait for locks instead of failing immediately
+            import sqlite3
+            conn = sqlite3.connect(logs_db_path(), timeout=30)
+            cls._thread_local.db = sqlite_utils.Database(conn)
         return cls._thread_local.db
 
 def _get_finish_reason(response_json: Dict[str, Any]) -> Optional[str]:
@@ -209,12 +217,21 @@ def _get_finish_reason(response_json: Dict[str, Any]) -> Optional[str]:
 
     return None
 
-def log_response(response, model):
+def log_response(response, model, consortium_run_id: Optional[str] = None):
     """Log model response to database and log file."""
     try:
         db = DatabaseConnection.get_connection()
         response.log_to_db(db)
-        logger.debug(f"Response from {model} logged to database")
+        
+        # Update consortium_run_id if provided
+        if consortium_run_id and hasattr(response, 'id'):
+            db.execute("UPDATE responses SET consortium_run_id = ? WHERE id = ?", [consortium_run_id, response.id])
+            logger.debug(f"Response from {model} logged with consortium_run_id: {consortium_run_id}")
+        else:
+            logger.debug(f"Response from {model} logged to database")
+
+        # Explicitly commit to release any locks held by this thread
+        db.conn.commit()
 
         # Check for truncation in various formats
         if response.response_json:
@@ -326,13 +343,16 @@ class ConsortiumOrchestrator:
         if self.manual_context:
             return self._orchestrate_manual(prompt, conversation_history, consortium_id)
         else:
-            return self._orchestrate_automatic(prompt, consortium_id)
+            return self._orchestrate_automatic(prompt, conversation_history, consortium_id)
 
     def _orchestrate_manual(self, prompt: str, conversation_history: str, consortium_id: Optional[str] = None) -> Dict[str, Any]:
         iteration_count = 0
         final_result = None
         original_prompt = prompt
         raw_arbiter_response_final = ""
+        
+        # Store conversation history for use in model prompts
+        self._conversation_history = conversation_history
         
         manual_history = []
         if conversation_history:
@@ -344,7 +364,7 @@ class ConsortiumOrchestrator:
             iteration_count += 1
             logger.debug(f"Starting manual iteration {iteration_count}")
 
-            model_responses = self._get_model_responses_manual(current_prompt)
+            model_responses = self._get_model_responses_manual(current_prompt, iteration_count)
             for i, r in enumerate(model_responses, 1):
                 r['id'] = i
 
@@ -410,11 +430,14 @@ class ConsortiumOrchestrator:
             }
         }
 
-    def _orchestrate_automatic(self, prompt: str, consortium_id: Optional[str] = None) -> Dict[str, Any]:
+    def _orchestrate_automatic(self, prompt: str, conversation_history: str = "", consortium_id: Optional[str] = None) -> Dict[str, Any]:
         iteration_count = 0
         final_result = None
         original_prompt = prompt
         raw_arbiter_response_final = ""
+        
+        # Store conversation history for use in model prompts
+        self._conversation_history = conversation_history
 
         while iteration_count < self.max_iterations or iteration_count < self.minimum_iterations:
             iteration_count += 1
@@ -484,14 +507,14 @@ class ConsortiumOrchestrator:
             }
         }
 
-    def _get_model_responses_manual(self, prompt: str) -> List[Dict[str, Any]]:
+    def _get_model_responses_manual(self, prompt: str, iteration: int) -> List[Dict[str, Any]]:
         responses = []
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
             for model, count in self.models.items():
                 for instance in range(count):
                     futures.append(
-                        executor.submit(self._get_single_model_response_manual, model, prompt, instance)
+                        executor.submit(self._get_single_model_response_manual, model, prompt, instance, iteration)
                     )
 
             for future in concurrent.futures.as_completed(futures):
@@ -499,18 +522,21 @@ class ConsortiumOrchestrator:
 
         return responses
 
-    def _get_single_model_response_manual(self, model: str, prompt: str, instance: int) -> Dict[str, Any]:
+    def _get_single_model_response_manual(self, model: str, prompt: str, instance: int, iteration: int) -> Dict[str, Any]:
         logger.debug(f"Getting manual response from model: {model} instance {instance + 1}")
         
-        xml_prompt = f"""<prompt>
+        # Include conversation history on first iteration if available
+        history_context = ""
+        if iteration == 1 and hasattr(self, '_conversation_history') and self._conversation_history:
+            history_context = f"""<conversation_history>
+{self._conversation_history}
+</conversation_history>
+
+"""
+        
+        xml_prompt = f"""{history_context}<prompt>
         <instruction>{prompt}</instruction>
     </prompt>"""
-        
-        # Record prompt if tracing is enabled
-        iteration = len(self.iteration_history) + 1
-        if self.tracer:
-            # We'll record the response after getting it
-            pass
         
         attempts = 0
         max_retries = 3
@@ -520,13 +546,17 @@ class ConsortiumOrchestrator:
                 model_obj = llm.get_model(model)
 
                 alias_opts = resolve_alias_options(model)
+                # Pass system prompt to the model if configured
+                prompt_kwargs = {"stream": False}
+                if self.system_prompt:
+                    prompt_kwargs["system"] = self.system_prompt
                 if alias_opts and alias_opts.get("options"):
-                    response = model_obj.prompt(xml_prompt, stream=False, **alias_opts["options"])
-                else:
-                    response = model_obj.prompt(xml_prompt, stream=False)
+                    prompt_kwargs.update(alias_opts["options"])
+                
+                response = model_obj.prompt(xml_prompt, **prompt_kwargs)
 
                 text = response.text()
-                log_response(response, f"{model}-{instance + 1}")
+                log_response(response, f"{model}-{instance + 1}", self.consortium_id)
                 
                 # Record trace if enabled
                 if self.tracer:
@@ -567,7 +597,16 @@ class ConsortiumOrchestrator:
     def _get_single_model_response_automatic(self, model: str, prompt: str, instance: int, iteration: int) -> Dict[str, Any]:
         logger.debug(f"Getting automatic response from model: {model} instance {instance + 1}")
         
-        xml_prompt = f"""<prompt>
+        # Include conversation history on first iteration if available
+        history_context = ""
+        if iteration == 1 and hasattr(self, '_conversation_history') and self._conversation_history:
+            history_context = f"""<conversation_history>
+{self._conversation_history}
+</conversation_history>
+
+"""
+        
+        xml_prompt = f"""{history_context}<prompt>
         <instruction>{prompt}</instruction>
     </prompt>"""
         
@@ -581,13 +620,17 @@ class ConsortiumOrchestrator:
                     return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation."}
 
                 alias_opts = resolve_alias_options(model)
+                # Build prompt kwargs with system prompt if configured
+                prompt_kwargs = {"stream": False}
+                if self.system_prompt:
+                    prompt_kwargs["system"] = self.system_prompt
                 if alias_opts and alias_opts.get("options"):
-                    response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
-                else:
-                    response = conversation.prompt(xml_prompt, stream=False)
+                    prompt_kwargs.update(alias_opts["options"])
+                
+                response = conversation.prompt(xml_prompt, **prompt_kwargs)
 
                 text = response.text()
-                log_response(response, f"{model}-{instance + 1}")
+                log_response(response, f"{model}-{instance + 1}", self.consortium_id)
                 
                 # Record trace if enabled
                 if self.tracer:
@@ -621,9 +664,7 @@ class ConsortiumOrchestrator:
         formatted_responses = self._format_responses(valid_responses)
         user_instructions = self.system_prompt or ""
 
-        if self.judging_method == 'pick-one':
-            arbiter_prompt_template = _read_pick_one_prompt()
-        elif self.judging_method == 'rank':
+        if self.judging_method == 'rank':
             arbiter_prompt_template = _read_rank_prompt()
         else:
             arbiter_prompt_template = _read_arbiter_prompt()
@@ -639,16 +680,14 @@ class ConsortiumOrchestrator:
             arbiter_model = llm.get_model(self.arbiter)
             response = arbiter_model.prompt(arbiter_prompt, stream=False)
             raw_arbiter_text = response.text()
-            log_response(response, self.arbiter)
+            log_response(response, self.arbiter, self.consortium_id)
             
             # Record arbiter trace if enabled
             if self.tracer:
                 self.tracer.record_arbiter_prompt(iteration, arbiter_prompt, raw_arbiter_text)
 
             try:
-                if self.judging_method == 'pick-one':
-                    parsed_result = self._parse_pick_one_response(raw_arbiter_text, valid_responses)
-                elif self.judging_method == 'rank':
+                if self.judging_method == 'rank':
                     parsed_result = self._parse_rank_response(raw_arbiter_text, valid_responses)
                 else:
                     parsed_result = self._parse_arbiter_response(raw_arbiter_text)
@@ -688,9 +727,7 @@ class ConsortiumOrchestrator:
         formatted_responses = self._format_responses(valid_responses)
         user_instructions = self.system_prompt or ""
 
-        if self.judging_method == 'pick-one':
-            arbiter_prompt_template = _read_pick_one_prompt()
-        elif self.judging_method == 'rank':
+        if self.judging_method == 'rank':
             arbiter_prompt_template = _read_rank_prompt()
         else:
             arbiter_prompt_template = _read_arbiter_prompt()
@@ -738,16 +775,14 @@ Please evaluate these new responses based on the original prompt and your previo
         else:
             arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
-        log_response(arbiter_response, self.arbiter)
+        log_response(arbiter_response, self.arbiter, self.consortium_id)
         
         # Record arbiter trace if enabled
         if self.tracer:
             self.tracer.record_arbiter_prompt(iteration, arbiter_prompt, raw_arbiter_text)
 
         try:
-            if self.judging_method == 'pick-one':
-                parsed_result = self._parse_pick_one_response(raw_arbiter_text, valid_responses)
-            elif self.judging_method == 'rank':
+            if self.judging_method == 'rank':
                 parsed_result = self._parse_rank_response(raw_arbiter_text, valid_responses)
             else:
                 parsed_result = self._parse_arbiter_response(raw_arbiter_text)
@@ -932,27 +967,9 @@ Please improve your response based on this feedback."""
 
         return result
 
-    def _parse_pick_one_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Parse arbiter response for pick-one method."""
-        match = re.search(r"<response_id>\s*(\d+)\s*</response_id>", text, re.IGNORECASE)
-        if not match:
-            raise ValueError("Could not find a valid <response_id> tag.")
-        chosen_id = int(match.group(1))
-        chosen_response = next((r for r in responses if r.get('id') == chosen_id), None)
-        if not chosen_response:
-            raise ValueError(f"Arbiter chose response ID {chosen_id}, but this ID was not found.")
-        return {
-            "synthesis": chosen_response['response'], 
-            "confidence": 1.0,
-            "analysis": f"Arbiter selected response #{chosen_id} from model '{chosen_response['model']}'.",
-            "dissent": "", 
-            "needs_iteration": False, 
-            "refinement_areas": [], 
-            "chosen_id": chosen_id
-        }
-
     def _parse_rank_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Parse arbiter response for rank method."""
+        """Parse arbiter response for rank method - simple and fast."""
+        # Extract ranking
         ranking_match = re.search(r"<ranking>([\s\S]*?)</ranking>", text, re.IGNORECASE | re.DOTALL)
         if not ranking_match:
             raise ValueError("Could not find a <ranking> tag.")
@@ -964,10 +981,12 @@ Please improve your response based on this feedback."""
         top_response = next((r for r in responses if r.get('id') == top_id), None)
         if not top_response:
             raise ValueError(f"Top-ranked response ID {top_id} not found.")
+        
+        # Return minimal result - rank mode is meant to be fast and simple
         return {
             "synthesis": top_response['response'], 
             "confidence": 1.0,
-            "analysis": f"Arbiter ranked all responses. Top choice is #{top_id} from '{top_response['model']}'. Full ranking: {ranked_ids}",
+            "analysis": f"Top: #{top_id} ({top_response['model']}). Ranking: {ranked_ids}",
             "dissent": "", 
             "needs_iteration": False, 
             "refinement_areas": [], 
@@ -1136,45 +1155,8 @@ def _save_consortium_config(name: str, config: ConsortiumConfig) -> None:
         {"name": name, "config": json.dumps(config.to_dict())}, replace=True
     )
 
-from click_default_group import DefaultGroup
-class DefaultToRunGroup(DefaultGroup):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Set 'run' as the default command
-        self.default_cmd_name = 'run'
-        self.ignore_unknown_options = True
-
-    def get_command(self, ctx, cmd_name):
-        # Try to get the command normally
-        rv = super().get_command(ctx, cmd_name)
-        if rv is not None:
-            return rv
-        # If command not found, check if it's an option for the default command
-        # Also handle cases where the command might be misinterpreted as an option
-        if cmd_name is None or cmd_name.startswith('-'):
-            # Check if 'run' is a valid command in the current context
-             run_cmd = super().get_command(ctx, self.default_cmd_name)
-             if run_cmd:
-                 return run_cmd
-        return None
-
-    def resolve_command(self, ctx, args):
-        # If no command name detected, assume default command 'run'
-        try:
-            # Peek at the first arg without consuming it
-            first_arg = args[0] if args else None
-            # If the first arg isn't a known command and doesn't look like an option,
-            # or if there are no args, prepend the default command name.
-            if first_arg is None or (not first_arg.startswith('-') and super().get_command(ctx, first_arg) is None):
-                 # Check if 'run' is actually registered before prepending
-                 if super().get_command(ctx, self.default_cmd_name) is not None:
-                     args.insert(0, self.default_cmd_name)
-        except IndexError:
-             # No arguments, definitely use default
-             if super().get_command(ctx, self.default_cmd_name) is not None:
-                 args = [self.default_cmd_name]
-
-        return super().resolve_command(ctx, args)
+# Note: DefaultGroup class removed - no longer needed since 'run' command was removed
+# Users should run saved consortiums via 'llm -m cns-name' instead
 
 
 def create_consortium(
@@ -1207,168 +1189,14 @@ def create_consortium(
 
 @llm.hookimpl
 def register_commands(cli):
-    @cli.group(cls=DefaultToRunGroup)
+    @cli.group()
     @click.pass_context
     def consortium(ctx):
         """Commands for managing and running model consortiums"""
         pass
 
-    @consortium.command(name="run")
-    @click.argument("prompt", required=False)
-    @click.option("-m", "--model", "models", multiple=True, help="Model to include", default=[])
-    @click.option("-n", "--count", type=int, default=1, help="Default number of instances")
-    @click.option("--arbiter", default="claude-3-opus-20240229", help="Model to use as arbiter")
-    @click.option("--confidence-threshold", type=float, default=0.8, help="Minimum confidence threshold")
-    @click.option("--max-iterations", type=int, default=3, help="Maximum number of iteration rounds")
-    @click.option("--min-iterations", type=int, default=1, help="Minimum number of iterations to perform")
-    @click.option("--system", help="System prompt text or path to system prompt file")
-    @click.option("--output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path), help="Save full results to this file")
-    @click.option("--stdin/--no-stdin", "read_from_stdin", default=True, help="Read prompt from stdin")
-    @click.option("--raw", is_flag=True, default=False, help="Output raw arbiter response")
-    @click.option("--judging-method", type=click.Choice(["default", "pick-one", "rank"], case_sensitive=False), default="default", help="Judging method")
-    @click.option("--manual-context/--auto-context", default=False, help="Use manual context instead of conversations")
-    @click.option("--trace/--no-trace", default=False, help="Enable prompt tracing for debugging")
-    @click.option("--trace-id", help="Use specific trace ID (for continuing traces)")
-    def run_command(prompt, models, count, arbiter, confidence_threshold, max_iterations, min_iterations, system, output, read_from_stdin, raw, judging_method, manual_context, trace, trace_id):
-        """Run prompt through a dynamically defined consortium of models."""
-        # Generate consortium_id at the start
-        consortium_id = secrets.token_hex(8)
-        
-        # Check if models list is empty
-        if not models:
-            # Provide default models if none are specified
-            models = ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "gpt-4", "gemini-pro"]
-            logger.info(f"No models specified, using default set: {', '.join(models)}")
-
-
-        # Handle prompt input (argument vs stdin)
-        if not prompt and read_from_stdin:
-            prompt_from_stdin = read_stdin_if_not_tty()
-            if prompt_from_stdin:
-                prompt = prompt_from_stdin
-            else:
-                 # If stdin is not a tty but empty, or no prompt arg given & stdin disabled
-                 if not sys.stdin.isatty():
-                     logger.warning("Reading from stdin enabled, but stdin was empty.")
-                 # Raise error only if no prompt was given via arg and stdin reading failed/disabled
-                 if not prompt: # Check again if prompt was somehow set
-                    raise click.UsageError("No prompt provided via argument or stdin.")
-        elif not prompt and not read_from_stdin:
-             raise click.UsageError("No prompt provided via argument and stdin reading is disabled.")
-
-
-        # Parse models and counts
-        try:
-            model_dict = parse_models(models, count)
-        except ValueError as e:
-            raise click.ClickException(str(e))
-
-        # Handle system prompt (text or file path)
-        system_prompt_content = None
-        if system:
-             system_path = pathlib.Path(system)
-             if system_path.is_file():
-                 try:
-                     system_prompt_content = system_path.read_text().strip()
-                     logger.info(f"Loaded system prompt from file: {system}")
-                 except Exception as e:
-                     raise click.ClickException(f"Error reading system prompt file '{system}': {e}")
-             else:
-                 system_prompt_content = system # Use as literal string
-                 logger.info("Using provided system prompt text.")
-        else:
-            system_prompt_content = DEFAULT_SYSTEM_PROMPT # Use default if nothing provided
-            logger.info("Using default system prompt.")
-
-
-        # Convert percentage confidence to decimal if needed
-        if confidence_threshold > 1.0:
-             if confidence_threshold <= 100.0:
-                 confidence_threshold /= 100.0
-             else:
-                 raise click.UsageError("Confidence threshold must be between 0.0 and 1.0 (or 0 and 100).")
-        elif confidence_threshold < 0.0:
-             raise click.UsageError("Confidence threshold must be non-negative.")
-
-        logger.info(f"Starting consortium run with {len(model_dict)} models.")
-        logger.debug(f"Models: {', '.join(f'{k}:{v}' for k, v in model_dict.items())}")
-        logger.debug(f"Arbiter model: {arbiter}")
-        logger.debug(f"Confidence: {confidence_threshold}, Max Iter: {max_iterations}, Min Iter: {min_iterations}")
-        logger.debug(f"Context mode: {'manual' if manual_context else 'automatic'}")
-
-        orchestrator = ConsortiumOrchestrator(
-            config=ConsortiumConfig(
-                models=model_dict,
-                system_prompt=system_prompt_content,
-                confidence_threshold=confidence_threshold,
-                max_iterations=max_iterations,
-                minimum_iterations=min_iterations,
-                arbiter=arbiter,
-                judging_method=judging_method,
-                manual_context=manual_context
-            )
-        )
-        
-        # Enable tracing if requested
-        actual_trace_id = None
-        if trace:
-            actual_trace_id = orchestrator.enable_tracing(trace_id)
-            logger.info(f"Prompt tracing enabled with ID: {actual_trace_id}")
-
-        try:
-            result = orchestrator.orchestrate(prompt, consortium_id=consortium_id)
-            
-            # Log trace ID if tracing was enabled
-            if trace:
-                click.echo(f"\n[Trace ID: {actual_trace_id}]", err=True)
-
-            # Output full result to JSON file if requested
-            if output:
-                try:
-                    with output.open('w') as f:
-                        json.dump(result, f, indent=2)
-                    logger.info(f"Full results saved to {output}")
-                except Exception as e:
-                    raise click.ClickException(f"Error saving results to '{output}': {e}")
-            # Extract synthesis data
-            final_synthesis_data = result.get("synthesis", {})
-            raw_response = final_synthesis_data.get("raw_arbiter_response", "")
-            parsed_synthesis = final_synthesis_data.get("synthesis", "")
-            analysis = final_synthesis_data.get("analysis", "")
-            
-            # Determine if parsing likely failed (same as in execute())
-            parsing_failed = (
-                "Parsing failed" in analysis or
-                (not parsed_synthesis and raw_response) or
-                (parsed_synthesis == raw_response and raw_response)
-            )
-            
-            if raw:
-                # User explicitly requested raw output
-                output_text = raw_response if raw_response else "Error: Raw arbiter response unavailable."
-                click.echo(output_text)
-            else:
-                if parsing_failed:
-                    # Fallback to raw response with a warning
-                    click.echo("Warning: Failed to extract clean synthesis; falling back to raw arbiter response.", err=True)
-                    output_text = raw_response if raw_response else "Error: Arbiter response unavailable."
-                    click.echo(output_text)
-                else:
-                    # Output clean synthesis
-                    click.echo(parsed_synthesis)
-            
-            # Optional: Log other parts like analysis/dissent if needed for debugging, but don't echo by default
-            # logger.debug(f"Analysis: {final_synthesis_data.get('analysis', '')}")
-            # logger.debug(f"Dissent: {final_synthesis_data.get('dissent', '')}")
-
-        except click.ClickException:
-            raise
-        except Exception as e:
-            logger.exception("Error during consortium run execution")
-            raise click.ClickException(f"Consortium run failed: {e}")
-
-
     # Register consortium management commands group
+    # Note: The 'run' command was removed. Use saved consortiums via 'llm -m cns-name' instead.
     @consortium.command(name="save")
     @click.argument("name")
     @click.option(
@@ -1414,9 +1242,9 @@ def register_commands(cli):
     )
     @click.option(
         "--judging-method",
-        type=click.Choice(["default", "pick-one", "rank"], case_sensitive=False),
+        type=click.Choice(["default", "rank"], case_sensitive=False),
         default="default",
-        help="Judging method for the arbiter (default, pick-one, rank)."
+        help="Judging method for the arbiter (default=synthesis, rank)."
     )
     @click.option(
         "--manual-context/--auto-context",
@@ -1525,120 +1353,8 @@ def register_commands(cli):
              # Catch potential database errors beyond NotFoundError
              raise click.ClickException(f"Error removing consortium '{name}': {e}")
 
-    @consortium.command(name="show-trace")
-    @click.argument("trace_id")
-    @click.option("--json-output", is_flag=True, help="Output as JSON")
-    @click.option("--iteration", type=int, help="Show only specific iteration")
-    def show_trace_command(trace_id, json_output, iteration):
-        """Display recorded prompt traces for debugging"""
-        db = DatabaseConnection.get_connection()
-        
-        # Check if table exists
-        if "prompt_traces" not in db.table_names():
-            raise click.ClickException("No traces found. Run with --trace to enable tracing.")
-        
-        # Build query using sqlite_utils table API
-        table = db["prompt_traces"]
-        where_clause = "trace_id = ?"
-        params = [trace_id]
-        
-        if iteration is not None:
-            where_clause += " AND iteration = ?"
-            params.append(iteration)
-        
-        # Use rows_where which returns dictionaries
-        traces = list(table.rows_where(
-            where_clause,
-            params,
-            order_by="iteration, prompt_type, model, instance"
-        ))
-        
-        if not traces:
-            raise click.ClickException(f"No traces found for trace_id: {trace_id}")
-        
-        if json_output:
-            output = {
-                "trace_id": trace_id,
-                "total_records": len(traces),
-                "traces": traces
-            }
-            click.echo(json.dumps(output, indent=2))
-        else:
-            click.echo(f"\n=== Prompt Trace: {trace_id} ===\n")
-            current_iteration = None
-            
-            for trace in traces:
-                if trace['iteration'] != current_iteration:
-                    current_iteration = trace['iteration']
-                    click.echo(f"\n--- Iteration {current_iteration} ---\n")
-                
-                click.echo(f"[{trace['prompt_type'].upper()}] {trace['model']}-{trace['instance']} @ {trace['timestamp']}")
-                click.echo(f"\nPrompt sent:\n{trace['prompt_text']}\n")
-                click.echo(f"Response received:\n{trace['response_text']}\n")
-                click.echo("=" * 80 + "\n")
-
-    @consortium.command(name="export-trace")
-    @click.argument("trace_id")
-    @click.argument("output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path))
-    def export_trace_command(trace_id, output):
-        """Export trace to a JSON file"""
-        db = DatabaseConnection.get_connection()
-        
-        # Use rows_where which returns dictionaries
-        table = db["prompt_traces"]
-        traces = list(table.rows_where(
-            "trace_id = ?",
-            [trace_id],
-            order_by="iteration, prompt_type, model, instance"
-        ))
-        
-        if not traces:
-            raise click.ClickException(f"No traces found for trace_id: {trace_id}")
-        
-        export_data = {
-            "trace_id": trace_id,
-            "exported_at": datetime.utcnow().isoformat(),
-            "total_records": len(traces),
-            "traces": traces
-        }
-        
-        try:
-            with output.open('w') as f:
-                json.dump(export_data, f, indent=2)
-            click.echo(f"Trace exported to {output}")
-        except Exception as e:
-            raise click.ClickException(f"Error exporting trace: {e}")
-
-    @consortium.command(name="leaderboard")
-    @click.option("--limit", type=int, default=10, help="Maximum number of models to show")
-    @click.option("--since", help="Show results since date (YYYY-MM-DD)")
-    @click.option("--model", "model_filter", help="Filter by specific model")
-    def leaderboard_command(limit, since, model_filter):
-        """View model performance rankings"""
-        try:
-            from .evaluation_store import EvaluationStore
-            store = EvaluationStore()
-            leaderboard = store.get_leaderboard(limit=limit, since=since, model_filter=model_filter)
-            
-            if not leaderboard:
-                click.echo("No evaluation data found. Run some consortiums first!")
-                return
-            
-            click.echo("🎯 Model Performance Leaderboard")
-            click.echo("=" * 60)
-            
-            for i, entry in enumerate(leaderboard, 1):
-                click.echo(f"{i}. {entry['model']}")
-                click.echo(f"   Evaluations: {entry['total_evaluations']}")
-                click.echo(f"   Avg Confidence: {entry['avg_confidence']:.3f}")
-                click.echo(f"   Avg Tokens: {entry['avg_tokens']:.0f}")
-                if 'win_rate' in entry:
-                    click.echo(f"   Win Rate: {entry['win_rate']:.1%}")
-                click.echo()
-                
-        except Exception as e:
-            logger.exception("Error generating leaderboard")
-            raise click.ClickException(f"Leaderboard generation failed: {e}")
+    # Note: Tracing commands (show-trace, export-trace, list-traces) removed during refactoring
+    # Note: leaderboard, export-training, run-info commands deferred during refactoring
 
     @consortium.command(name="runs")
     @click.option("--limit", type=int, default=10, help="Maximum number of runs to show")
@@ -1669,107 +1385,6 @@ def register_commands(cli):
         except Exception as e:
             logger.exception("Error listing runs")
             raise click.ClickException(f"Failed to list runs: {e}")
-
-    @consortium.command(name="export-training")
-    @click.argument("output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path))
-    @click.option("--since", help="Export evaluations since date (YYYY-MM-DD)")
-    @click.option("--model", "model_filter", help="Filter by specific model")
-    @click.option("--min-confidence", type=float, help="Minimum confidence threshold")
-    def export_training_command(output, since, model_filter, min_confidence):
-        """Export evaluations as training data (JSONL format)"""
-        try:
-            from .evaluation_store import EvaluationStore
-            store = EvaluationStore()
-            
-            count = store.export_training_data(
-                output_path=str(output),
-                since=since,
-                model_filter=model_filter,
-                min_confidence=min_confidence
-            )
-            
-            click.echo(f"✅ Exported {count} training samples to {output}")
-            
-        except Exception as e:
-            logger.exception("Error exporting training data")
-            raise click.ClickException(f"Export failed: {e}")
-
-    @consortium.command(name="run-info")
-    @click.argument("consortium_id")
-    @click.option("--json-output", is_flag=True, help="Output as JSON")
-    def run_info_command(consortium_id, json_output):
-        """Show detailed execution trace for a consortium run"""
-        try:
-            from .evaluation_store import EvaluationStore
-            store = EvaluationStore()
-            run_info = store.get_run_details(consortium_id)
-            
-            if not run_info:
-                raise click.ClickException(f"No data found for consortium ID: {consortium_id}")
-            
-            if json_output:
-                click.echo(json.dumps(run_info, indent=2))
-            else:
-                click.echo(f"📊 Run Details: {consortium_id}")
-                click.echo("=" * 60)
-                click.echo(f"Timestamp: {run_info['timestamp']}")
-                click.echo(f"Arbiter: {run_info['arbiter']}")
-                click.echo(f"Models Used: {', '.join(run_info['models'])}")
-                click.echo(f"Total Tokens: {run_info['total_tokens']}")
-                click.echo(f"Total Duration: {run_info['total_duration_ms']:.2f}ms")
-                click.echo()
-                
-                click.echo("Iterations:")
-                for i, iteration in enumerate(run_info['iterations'], 1):
-                    click.echo(f"  {i}. Confidence: {iteration['confidence']:.3f}")
-                    click.echo(f"     Tokens: {iteration['tokens']}")
-                    click.echo(f"     Models: {len(iteration['model_responses'])} responses")
-                
-                if run_info.get('final_synthesis'):
-                    click.echo(f"\nFinal Synthesis:\n{run_info['final_synthesis']}\n")
-                
-        except Exception as e:
-            logger.exception(f"Error retrieving run info for {consortium_id}")
-            raise click.ClickException(f"Failed to get run info: {e}")
-
-
-    @consortium.command(name="list-traces")
-    @click.option("--limit", type=int, default=10, help="Maximum number of traces to show")
-    def list_traces_command(limit):
-        """List recent trace IDs"""
-        db = DatabaseConnection.get_connection()
-        
-        if "prompt_traces" not in db.table_names():
-            click.echo("No traces found. Run with --trace to enable tracing.")
-            return
-        
-        # Use raw SQL with proper conversion to dict
-        query = """
-            SELECT trace_id, MIN(timestamp) as first_trace, COUNT(*) as record_count
-            FROM prompt_traces
-            GROUP BY trace_id
-            ORDER BY first_trace DESC
-            LIMIT ?
-        """
-        # Execute and convert rows to dicts manually
-        cursor = db.execute(query, [limit])
-        traces = []
-        for row in cursor.fetchall():
-            traces.append({
-                "trace_id": row[0],
-                "first_trace": row[1],
-                "record_count": row[2]
-            })
-        
-        if not traces:
-            click.echo("No traces found.")
-            return
-        
-        click.echo("\nRecent Traces:\n")
-        for trace in traces:
-            click.echo(f"Trace ID: {trace['trace_id']}")
-            click.echo(f"  First recorded: {trace['first_trace']}")
-            click.echo(f"  Total records: {trace['record_count']}\n")
 
 
 @llm.hookimpl
