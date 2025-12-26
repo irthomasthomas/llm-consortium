@@ -1,7 +1,7 @@
 import click
 import json
 import llm
-from llm.cli import load_conversation
+from llm.cli import load_conversation, resolve_alias_options  # Import from llm.cli instead of llm
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import logging
@@ -16,20 +16,6 @@ import concurrent.futures  # Add concurrent.futures for parallel processing
 import threading  # Add threading for thread-local storage
 import secrets
 import uuid  # Keep this for PromptTracer only
-
-
-def resolve_alias_options(model_name: str) -> Optional[Dict[str, Any]]:
-    """
-    Stub function for resolve_alias_options.
-    
-    The original llm version this plugin was developed for had a resolve_alias_options
-    function that would return model options configured via aliases. The current llm
-    version does not support this feature, so this returns None.
-    
-    Future enhancement: Read from a consortium-specific options config file.
-    """
-    return None
-
 
 class PromptTrace(BaseModel):
     """Model for storing prompt trace information"""
@@ -546,14 +532,12 @@ class ConsortiumOrchestrator:
                 model_obj = llm.get_model(model)
 
                 alias_opts = resolve_alias_options(model)
-                # Pass system prompt to the model if configured
-                prompt_kwargs = {"stream": False}
                 if self.system_prompt:
                     prompt_kwargs["system"] = self.system_prompt
                 if alias_opts and alias_opts.get("options"):
-                    prompt_kwargs.update(alias_opts["options"])
-                
-                response = model_obj.prompt(xml_prompt, **prompt_kwargs)
+                    response = model_obj.prompt(xml_prompt, stream=False, **alias_opts["options"])
+                else:
+                    response = model_obj.prompt(xml_prompt, stream=False)
 
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}", self.consortium_id)
@@ -620,14 +604,12 @@ class ConsortiumOrchestrator:
                     return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation."}
 
                 alias_opts = resolve_alias_options(model)
-                # Build prompt kwargs with system prompt if configured
-                prompt_kwargs = {"stream": False}
                 if self.system_prompt:
                     prompt_kwargs["system"] = self.system_prompt
                 if alias_opts and alias_opts.get("options"):
-                    prompt_kwargs.update(alias_opts["options"])
-                
-                response = conversation.prompt(xml_prompt, **prompt_kwargs)
+                    response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
+                else:
+                    response = conversation.prompt(xml_prompt, stream=False)
 
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}", self.consortium_id)
