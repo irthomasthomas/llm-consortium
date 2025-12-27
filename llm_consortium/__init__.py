@@ -1664,7 +1664,12 @@ def register_commands(cli):
                 click.echo(f"Models: {run['models']}")
                 click.echo(f"Final Confidence: {run['final_confidence']:.3f}")
                 click.echo(f"Iterations: {run.get('iteration_id', 'N/A')}")
-                click.echo(f"Total Tokens: {run.get('token_usage_json', 'N/A')}")
+                try:
+                    tokens_data = json.loads(run.get('token_usage_json', '{}'))
+                    total_tokens = sum(tokens_data.values()) if isinstance(tokens_data, dict) else tokens_data
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    total_tokens = 'N/A'
+                click.echo(f"Total Tokens: {total_tokens}")
                 click.echo("-" * 80)
                 
         except Exception as e:
@@ -1702,6 +1707,7 @@ def register_commands(cli):
         """Show detailed execution trace for a consortium run"""
         try:
             from .evaluation_store import EvaluationStore
+            import json
             store = EvaluationStore()
             run_info = store.get_run_details(consortium_id)
             
@@ -1713,21 +1719,39 @@ def register_commands(cli):
             else:
                 click.echo(f"📊 Run Details: {consortium_id}")
                 click.echo("=" * 60)
-                click.echo(f"Timestamp: {run_info['timestamp']}")
-                click.echo(f"Arbiter: {run_info['arbiter']}")
-                click.echo(f"Models Used: {', '.join(run_info['models'])}")
-                click.echo(f"Total Tokens: {run_info['total_tokens']}")
-                click.echo(f"Total Duration: {run_info['total_duration_ms']:.2f}ms")
-                click.echo()
+                click.echo(f"Timestamp: {run_info.get('timestamp', 'N/A')}")
+                click.echo(f"Arbiter: {run_info.get('arbiter_model', 'N/A')}")
                 
-                click.echo("Iterations:")
-                for i, iteration in enumerate(run_info['iterations'], 1):
-                    click.echo(f"  {i}. Confidence: {iteration['confidence']:.3f}")
-                    click.echo(f"     Tokens: {iteration['tokens']}")
-                    click.echo(f"     Models: {len(iteration['model_responses'])} responses")
+                models_raw = run_info.get('evaluated_models', '{}')
+                try:
+                    models_dict = json.loads(models_raw)
+                    if isinstance(models_dict, dict):
+                        models_list = [f'{m} ({c})' for m, c in models_dict.items()]
+                    else:
+                        models_list = models_dict
+                except:
+                    models_list = [str(models_raw)]
+                click.echo(f"Models Used: {', '.join(models_list)}")
+
+                tokens_raw = run_info.get('token_usage_json', '{}')
+                try:
+                    tokens_dict = json.loads(tokens_raw)
+                    total_tokens = sum(tokens_dict.values()) if isinstance(tokens_dict, dict) else 0
+                except:
+                    total_tokens = 0
+                click.echo(f"Total Tokens: {total_tokens}")
+                click.echo(f"Duration: {run_info.get('duration_ms', 0)}ms")
+                click.echo(f"Confidence: {run_info.get('confidence', 0.0):.3f}")
                 
-                if run_info.get('final_synthesis'):
-                    click.echo(f"\nFinal Synthesis:\n{run_info['final_synthesis']}\n")
+                decision_raw = run_info.get('decision_json', '{}')
+                try:
+                    decision = json.loads(decision_raw)
+                    if isinstance(decision, dict) and 'synthesis' in decision:
+                        click.echo("\nFinal Synthesis:")
+                        click.echo("-" * 20)
+                        click.echo(decision['synthesis'])
+                except:
+                    pass
                 
         except Exception as e:
             logger.exception(f"Error retrieving run info for {consortium_id}")
