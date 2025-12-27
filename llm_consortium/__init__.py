@@ -89,7 +89,23 @@ class PromptTracer:
         logger.info(f"Saved {len(self.traces)} trace records with trace_id: {self.trace_id}")
         
     def export_to_dict(self) -> Dict[str, Any]:
-        """Export traces to a dictionary format"""
+        """Export traces to a dictionary format"""        # Store evaluation data
+        try:
+            from .evaluation_store import EvaluationStore
+            eval_store = EvaluationStore()
+            eval_store.store_evaluation(
+                consortium_id=consortium_id or str(uuid.uuid4()),
+                iteration_id=iteration_count,
+                prompt_text=original_prompt,
+                arbiter_model=self.arbiter,
+                evaluated_models=list(self.models.keys()),
+                decision=final_result,
+                token_usage={}, 
+                duration_ms=0,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store evaluation: {e}")
+
         return {
             "trace_id": self.trace_id,
             "total_traces": len(self.traces),
@@ -1329,40 +1345,25 @@ def register_commands(cli):
                         json.dump(result, f, indent=2)
                     logger.info(f"Full results saved to {output}")
                 except Exception as e:
-                    raise click.ClickException(f"Error saving results to '{output}': {e}")
-            # Extract synthesis data
+                    click.ClickException(f"Error saving results to '{output}': {e}")
+
+
+            # *** FIX: Conditional output based on --raw flag ***
             final_synthesis_data = result.get("synthesis", {})
-            raw_response = final_synthesis_data.get("raw_arbiter_response", "")
-            parsed_synthesis = final_synthesis_data.get("synthesis", "")
-            analysis = final_synthesis_data.get("analysis", "")
-            
-            # Determine if parsing likely failed (same as in execute())
-            parsing_failed = (
-                "Parsing failed" in analysis or
-                (not parsed_synthesis and raw_response) or
-                (parsed_synthesis == raw_response and raw_response)
-            )
-            
+
             if raw:
-                # User explicitly requested raw output
-                output_text = raw_response if raw_response else "Error: Raw arbiter response unavailable."
-                click.echo(output_text)
+                 # Output the raw arbiter response text
+                 raw_text = final_synthesis_data.get("raw_arbiter_response", "Error: Raw arbiter response unavailable")
+                 click.echo(raw_text)
             else:
-                if parsing_failed:
-                    # Fallback to raw response with a warning
-                    click.echo("Warning: Failed to extract clean synthesis; falling back to raw arbiter response.", err=True)
-                    output_text = raw_response if raw_response else "Error: Arbiter response unavailable."
-                    click.echo(output_text)
-                else:
-                    # Output clean synthesis
-                    click.echo(parsed_synthesis)
-            
+                 # Output the clean synthesis text
+                 clean_text = final_synthesis_data.get("synthesis", "Error: Clean synthesis unavailable")
+                 click.echo(clean_text)
+
             # Optional: Log other parts like analysis/dissent if needed for debugging, but don't echo by default
             # logger.debug(f"Analysis: {final_synthesis_data.get('analysis', '')}")
             # logger.debug(f"Dissent: {final_synthesis_data.get('dissent', '')}")
 
-        except click.ClickException:
-            raise
         except Exception as e:
             logger.exception("Error during consortium run execution")
             raise click.ClickException(f"Consortium run failed: {e}")
@@ -1662,8 +1663,8 @@ def register_commands(cli):
                 click.echo(f"Timestamp: {run['timestamp']}")
                 click.echo(f"Models: {run['models']}")
                 click.echo(f"Final Confidence: {run['final_confidence']:.3f}")
-                click.echo(f"Iterations: {run['iteration_count']}")
-                click.echo(f"Total Tokens: {run['total_tokens']}")
+                click.echo(f"Iterations: {run.get('iteration_id', 'N/A')}")
+                click.echo(f"Total Tokens: {run.get('token_usage_json', 'N/A')}")
                 click.echo("-" * 80)
                 
         except Exception as e:
