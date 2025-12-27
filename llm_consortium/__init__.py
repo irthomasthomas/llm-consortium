@@ -74,7 +74,7 @@ def user_dir() -> pathlib.Path:
 
 def logs_db_path() -> pathlib.Path:
     """Get path to logs database."""
-    return user_dir() / "logs.db"
+    return user_dir() / "consortium_logs.db"
 
 def setup_logging() -> None:
     """Configure logging to write to both file and console."""

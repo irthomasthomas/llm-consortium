@@ -6,7 +6,7 @@ Based on Karpathy's observation:
 
 > "I find that recently I end up using all of the models and all the time. One aspect is the curiosity of who gets what, but the other is that for a lot of problems they have this 'NP Complete' nature to them, where coming up with a solution is significantly harder than verifying a candidate solution. So your best performance will come from just asking all the models, and then getting them to come to a consensus."
 
-This plugin for the `llm` package implements a model consortium system with iterative refinement and response synthesis. It orchestrates multiple language models to collaboratively solve complex problems through structured dialogue, evaluation, and arbitration.
+This plugin for the `llm` package implements a model consortium system with iterative refinement and response synthesis. A parallel reasoning method that orchestrates multiple diverse language models to collaboratively solve complex problems through structured dialogue, evaluation, and arbitration.
 
 ## Core Algorithm Flow
 
