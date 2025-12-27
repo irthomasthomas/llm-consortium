@@ -178,7 +178,7 @@ class ConsortiumOrchestrator:
         self.confidence_threshold = config.confidence_threshold
         self.max_iterations = config.max_iterations
         self.minimum_iterations = config.minimum_iterations
-        self.arbiter = config.arbiter or "gemini-2.0-flash"
+        self.arbiter = config.arbiter
         self.judging_method = config.judging_method
         self.iteration_history: List[IterationContext] = []
         self.consortium_id: Optional[str] = None
@@ -208,9 +208,7 @@ class ConsortiumOrchestrator:
 
         combined_prompt = "\n\n".join(full_prompt_parts)
 
-        current_prompt = f"""<prompt>
-    <instruction>{combined_prompt}</instruction>
-</prompt>"""
+        current_prompt = f"<prompt>\n<instruction>{combined_prompt}</instruction>\n</prompt>"
 
         # For non-iterative methods, run only once
         if hasattr(self, "judging_method") and self.judging_method != "default":
@@ -329,10 +327,19 @@ class ConsortiumOrchestrator:
 
             while attempts < max_retries:
                 try:
-                    xml_prompt = f"""<prompt>
-        <uuid>{prompt_uuid}</uuid>
-        <instruction>{prompt}</instruction>
-    </prompt>"""
+                    # Add UUID to the existing prompt structure instead of wrapping again
+                    if "<prompt>" in prompt and "<instruction>" in prompt:
+                        # Extract the instruction content and add UUID
+                        instruction_match = re.search(r'<instruction>(.*?)</instruction>', prompt, re.DOTALL)
+                        if instruction_match:
+                            instruction_content = instruction_match.group(1)
+                            xml_prompt = f"<prompt>\n<uuid>{prompt_uuid}</uuid>\n<instruction>{instruction_content}</instruction>\n</prompt>"
+                        else:
+                            # Fallback if regex fails
+                            xml_prompt = f"<prompt>\n<uuid>{prompt_uuid}</uuid>\n{prompt}\n</prompt>"
+                    else:
+                        # If prompt doesn't have expected structure, wrap it cleanly
+                        xml_prompt = f"<prompt>\n<uuid>{prompt_uuid}</uuid>\n<instruction>{prompt}</instruction>\n</prompt>"
 
                     response = llm.get_model(model).prompt(xml_prompt)
 
@@ -542,12 +549,12 @@ Please improve your response based on this feedback."""
     def _parse_arbiter_response(self, text: str, is_final_iteration: bool = False) -> Dict[str, Any]:
         """Parse arbiter response with special handling for final iteration."""
         sections = {
-            "synthesis": r"<synthesis>([\s\S]*?)</synthesis>",
-            "confidence": r"<confidence>\s*([\d.]+)\s*</confidence>",
-            "analysis": r"<analysis>([\s\S]*?)</analysis>",
-            "dissent": r"<dissent>([\s\S]*?)</dissent>",
-            "needs_iteration": r"<needs_iteration>(true|false)</needs_iteration>",
-            "refinement_areas": r"<refinement_areas>([\s\S]*?)</refinement_areas>"
+            "synthesis": r"<SYNTHESIS>([\s\S]*?)</SYNTHESIS>",
+            "confidence": r"<CONFIDENCE>\s*([\d.]+)\s*</CONFIDENCE>",
+            "analysis": r"<ANALYSIS>([\s\S]*?)</ANALYSIS>",
+            "dissent": r"<DISSENT>([\s\S]*?)</DISSENT>",
+            "needs_iteration": r"<NEEDS_ITERATION>(true|false)</NEEDS_ITERATION>",
+            "refinement_areas": r"<REFINEMENT_AREAS>([\s\S]*?)</REFINEMENT_AREAS>"
         }
 
         # Initialize with default values to avoid KeyError
@@ -880,7 +887,7 @@ def register_commands(cli):
     @click.option(
         "--arbiter",
         help="Model to use as arbiter",
-        default="claude-3-opus-20240229"
+        default=None
     )
     @click.option(
         "--confidence-threshold",
@@ -931,10 +938,7 @@ def register_commands(cli):
         """Run prompt through a dynamically defined consortium of models."""
         # Check if models list is empty
         if not models:
-            # Provide default models if none are specified
-            models = ["claude-3-opus-20240229", "claude-3-sonnet-20240229", "gpt-4", "gemini-pro"]
-            logger.info(f"No models specified, using default set: {', '.join(models)}")
-
+            raise click.UsageError("At least one model must be specified with --model/-m.")
 
         # Handle prompt input (argument vs stdin)
         if not prompt and read_from_stdin:
@@ -1055,8 +1059,8 @@ def register_commands(cli):
     )
     @click.option(
         "--arbiter",
-        help="Model to use as arbiter",
-        required=True
+        help="Model to use as arbiter (defaults to first model if not specified)",
+        required=False
     )
     @click.option(
         "--confidence-threshold",

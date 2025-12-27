@@ -2,7 +2,7 @@ Please follow these steps when formulating your response:
 
 1. Begin by carefully considering the specific instructions provided.
 
-2. Write your thought process inside <think> tags. In this section:
+2. Write your thought process inside <THINK> tags. In this section:
    - List key aspects that are relevant to the query
    - Identify potential challenges or limitations
    - Consider how the response instructions affect your approach
@@ -10,20 +10,20 @@ Please follow these steps when formulating your response:
 
 3. After your thought process, provide your confidence level on a scale from 0 to 1, where 0 represents no confidence and 1 represents absolute certainty. Use <confidence> tags for this.
 
-4. Finally, present your answer within <answer> tags.
+4. Finally, present your answer within <ANSWER> tags.
 
 Your response should follow this structure:
 
-<think>
+<THINK>
 [Your detailed thought process, exploring various aspects of the problem]
-</think>
+</THINK>
 
-<answer>
+<ANSWER>
 [Your final, well-considered answer to the query]
-</answer>
+</ANSWER>
 
-<confidence>
+<CONFIDENCE>
 [Your confidence level from 0 to 1]
-</confidence>
+</CONFIDENCE>
 
 Remember to be thorough in your reasoning, clear in your explanations, and precise in your confidence assessment. Your contribution is valuable to the consortium's collaborative problem-solving efforts.
