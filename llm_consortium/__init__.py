@@ -1,7 +1,8 @@
 import click
 import json
 import llm
-from llm.cli import load_conversation, resolve_alias_options  # Import from llm.cli instead of llm
+from llm.cli import load_conversation
+from llm import resolve_alias_options
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import logging
@@ -531,13 +532,15 @@ class ConsortiumOrchestrator:
             try:
                 model_obj = llm.get_model(model)
 
+                prompt_kwargs = {}
                 alias_opts = resolve_alias_options(model)
+                if alias_opts and alias_opts.get("options"):
+                    prompt_kwargs.update(alias_opts["options"])
+
                 if self.system_prompt:
                     prompt_kwargs["system"] = self.system_prompt
-                if alias_opts and alias_opts.get("options"):
-                    response = model_obj.prompt(xml_prompt, stream=False, **alias_opts["options"])
-                else:
-                    response = model_obj.prompt(xml_prompt, stream=False)
+
+                response = model_obj.prompt(xml_prompt, stream=False, **prompt_kwargs)
 
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}", self.consortium_id)
@@ -603,13 +606,15 @@ class ConsortiumOrchestrator:
                 if conversation is None:
                     return {"model": model, "instance": instance + 1, "error": "Failed to initialize model conversation."}
 
+                prompt_kwargs = {}
                 alias_opts = resolve_alias_options(model)
+                if alias_opts and alias_opts.get("options"):
+                    prompt_kwargs.update(alias_opts["options"])
+
                 if self.system_prompt:
                     prompt_kwargs["system"] = self.system_prompt
-                if alias_opts and alias_opts.get("options"):
-                    response = conversation.prompt(xml_prompt, stream=False, **alias_opts["options"])
-                else:
-                    response = conversation.prompt(xml_prompt, stream=False)
+
+                response = conversation.prompt(xml_prompt, stream=False, **prompt_kwargs)
 
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}", self.consortium_id)
@@ -660,7 +665,13 @@ class ConsortiumOrchestrator:
 
         try:
             arbiter_model = llm.get_model(self.arbiter)
-            response = arbiter_model.prompt(arbiter_prompt, stream=False)
+            
+            prompt_kwargs = {}
+            alias_opts = resolve_alias_options(self.arbiter)
+            if alias_opts and alias_opts.get("options"):
+                prompt_kwargs.update(alias_opts["options"])
+            
+            response = arbiter_model.prompt(arbiter_prompt, stream=False, **prompt_kwargs)
             raw_arbiter_text = response.text()
             log_response(response, self.arbiter, self.consortium_id)
             
@@ -751,11 +762,12 @@ class ConsortiumOrchestrator:
 Please evaluate these new responses based on the original prompt and your previous feedback."""
             logger.debug(f"Subsequent arbiter iteration {iteration} - sending only new responses")
 
+        prompt_kwargs = {}
         alias_opts = resolve_alias_options(self.arbiter)
         if alias_opts and alias_opts.get("options"):
-            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False, **alias_opts["options"])
-        else:
-            arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
+            prompt_kwargs.update(alias_opts["options"])
+
+        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False, **prompt_kwargs)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter, self.consortium_id)
         
@@ -860,12 +872,12 @@ Please evaluate these new responses based on the original prompt and your previo
             # Simplified prompt for automatic mode - conversation memory handles context
             if not self.manual_context:
                 # Use concise iteration prompt that relies on conversation history
-                return f"""Based on my previous feedback, please refine your response to the original prompt.
+                return f"""Try to improve your answer - unless you are convinced that it cannot be improved, then return the original.
 
-Focus on these areas for improvement:
-{chr(10).join('- ' + area for area in formatted_synthesis["refinement_areas"]) if formatted_synthesis["refinement_areas"] else '- General quality improvement'}
+Suggestions for improvement:
+{chr(10).join('- ' + area for area in formatted_synthesis["refinement_areas"]) if formatted_synthesis["refinement_areas"] else '- TBD (Review unavailable. Try to self-improve instead)'}
 
-Previous confidence level: {formatted_synthesis["confidence"]:.2f}"""
+"""
             
             # Full context for manual mode
             if "{refinement_areas}" in iteration_prompt_template:
