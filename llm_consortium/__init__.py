@@ -90,7 +90,23 @@ class PromptTracer:
         logger.info(f"Saved {len(self.traces)} trace records with trace_id: {self.trace_id}")
         
     def export_to_dict(self) -> Dict[str, Any]:
-        """Export traces to a dictionary format"""
+        """Export traces to a dictionary format"""        # Store evaluation data
+        try:
+            from .evaluation_store import EvaluationStore
+            eval_store = EvaluationStore()
+            eval_store.store_evaluation(
+                consortium_id=consortium_id or str(uuid.uuid4()),
+                iteration_id=iteration_count,
+                prompt_text=original_prompt,
+                arbiter_model=self.arbiter,
+                evaluated_models=list(self.models.keys()),
+                decision=final_result,
+                token_usage={}, 
+                duration_ms=0,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to store evaluation: {e}")
+
         return {
             "trace_id": self.trace_id,
             "total_traces": len(self.traces),
@@ -1372,13 +1388,138 @@ def register_commands(cli):
                 click.echo(f"Timestamp: {run['timestamp']}")
                 click.echo(f"Models: {run['models']}")
                 click.echo(f"Final Confidence: {run['final_confidence']:.3f}")
-                click.echo(f"Iterations: {run['iteration_count']}")
-                click.echo(f"Total Tokens: {run['total_tokens']}")
+                click.echo(f"Iterations: {run.get('iteration_id', 'N/A')}")
+                try:
+                    tokens_data = json.loads(run.get('token_usage_json', '{}'))
+                    total_tokens = sum(tokens_data.values()) if isinstance(tokens_data, dict) else tokens_data
+                except (json.JSONDecodeError, TypeError, AttributeError):
+                    total_tokens = 'N/A'
+                click.echo(f"Total Tokens: {total_tokens}")
                 click.echo("-" * 80)
                 
         except Exception as e:
             logger.exception("Error listing runs")
             raise click.ClickException(f"Failed to list runs: {e}")
+
+    @consortium.command(name="export-training")
+    @click.argument("output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path))
+    @click.option("--since", help="Export evaluations since date (YYYY-MM-DD)")
+    @click.option("--model", "model_filter", help="Filter by specific model")
+    @click.option("--min-confidence", type=float, help="Minimum confidence threshold")
+    def export_training_command(output, since, model_filter, min_confidence):
+        """Export evaluations as training data (JSONL format)"""
+        try:
+            from .evaluation_store import EvaluationStore
+            store = EvaluationStore()
+            
+            count = store.export_training_data(
+                output_path=str(output),
+                since=since,
+                model_filter=model_filter,
+                min_confidence=min_confidence
+            )
+            
+            click.echo(f"✅ Exported {count} training samples to {output}")
+            
+        except Exception as e:
+            logger.exception("Error exporting training data")
+            raise click.ClickException(f"Export failed: {e}")
+
+    @consortium.command(name="run-info")
+    @click.argument("consortium_id")
+    @click.option("--json-output", is_flag=True, help="Output as JSON")
+    def run_info_command(consortium_id, json_output):
+        """Show detailed execution trace for a consortium run"""
+        try:
+            from .evaluation_store import EvaluationStore
+            import json
+            store = EvaluationStore()
+            run_info = store.get_run_details(consortium_id)
+            
+            if not run_info:
+                raise click.ClickException(f"No data found for consortium ID: {consortium_id}")
+            
+            if json_output:
+                click.echo(json.dumps(run_info, indent=2))
+            else:
+                click.echo(f"📊 Run Details: {consortium_id}")
+                click.echo("=" * 60)
+                click.echo(f"Timestamp: {run_info.get('timestamp', 'N/A')}")
+                click.echo(f"Arbiter: {run_info.get('arbiter_model', 'N/A')}")
+                
+                models_raw = run_info.get('evaluated_models', '{}')
+                try:
+                    models_dict = json.loads(models_raw)
+                    if isinstance(models_dict, dict):
+                        models_list = [f'{m} ({c})' for m, c in models_dict.items()]
+                    else:
+                        models_list = models_dict
+                except:
+                    models_list = [str(models_raw)]
+                click.echo(f"Models Used: {', '.join(models_list)}")
+
+                tokens_raw = run_info.get('token_usage_json', '{}')
+                try:
+                    tokens_dict = json.loads(tokens_raw)
+                    total_tokens = sum(tokens_dict.values()) if isinstance(tokens_dict, dict) else 0
+                except:
+                    total_tokens = 0
+                click.echo(f"Total Tokens: {total_tokens}")
+                click.echo(f"Duration: {run_info.get('duration_ms', 0)}ms")
+                click.echo(f"Confidence: {run_info.get('confidence', 0.0):.3f}")
+                
+                decision_raw = run_info.get('decision_json', '{}')
+                try:
+                    decision = json.loads(decision_raw)
+                    if isinstance(decision, dict) and 'synthesis' in decision:
+                        click.echo("\nFinal Synthesis:")
+                        click.echo("-" * 20)
+                        click.echo(decision['synthesis'])
+                except:
+                    pass
+                
+        except Exception as e:
+            logger.exception(f"Error retrieving run info for {consortium_id}")
+            raise click.ClickException(f"Failed to get run info: {e}")
+
+
+    @consortium.command(name="list-traces")
+    @click.option("--limit", type=int, default=10, help="Maximum number of traces to show")
+    def list_traces_command(limit):
+        """List recent trace IDs"""
+        db = DatabaseConnection.get_connection()
+        
+        if "prompt_traces" not in db.table_names():
+            click.echo("No traces found. Run with --trace to enable tracing.")
+            return
+        
+        # Use raw SQL with proper conversion to dict
+        query = """
+            SELECT trace_id, MIN(timestamp) as first_trace, COUNT(*) as record_count
+            FROM prompt_traces
+            GROUP BY trace_id
+            ORDER BY first_trace DESC
+            LIMIT ?
+        """
+        # Execute and convert rows to dicts manually
+        cursor = db.execute(query, [limit])
+        traces = []
+        for row in cursor.fetchall():
+            traces.append({
+                "trace_id": row[0],
+                "first_trace": row[1],
+                "record_count": row[2]
+            })
+        
+        if not traces:
+            click.echo("No traces found.")
+            return
+        
+        click.echo("\nRecent Traces:\n")
+        for trace in traces:
+            click.echo(f"Trace ID: {trace['trace_id']}")
+            click.echo(f"  First recorded: {trace['first_trace']}")
+            click.echo(f"  Total records: {trace['record_count']}\n")
 
 
 @llm.hookimpl
