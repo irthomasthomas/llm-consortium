@@ -113,3 +113,11 @@ def create_strategy(strategy_name: Optional[str], orchestrator: 'ConsortiumOrche
         # If not found in registry and dynamic loading failed or wasn't attempted
         logger.error(f"Unknown strategy requested: '{normalized_name}'. Available: {list(_strategy_registry.keys())}")
         raise ValueError(f"Unknown strategy: '{normalized_name}'")
+
+# Register elimination strategy
+from .elimination import EliminationStrategy
+_strategy_registry["elimination"] = EliminationStrategy
+
+# Register voting strategy
+from .voting import VotingStrategy
+_strategy_registry["voting"] = VotingStrategy
