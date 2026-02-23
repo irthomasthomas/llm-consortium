@@ -3,3 +3,6 @@ build/
 *.egg-info/
 __pycache__/
 .venv
+.artefacts
+.artefacts/
+.artefacts/*

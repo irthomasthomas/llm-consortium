@@ -177,11 +177,4 @@ Developed as part of the LLM ecosystem and inspired by Andrej Karpathy’s insig
 
 ## Changelog
 
-- **v0.3.2** (Upcoming):
-  - Added conversation continuation support using `-c` and `--cid` flags.
-  - Improved error handling for arbiter response parsing (`KeyError: confidence`).
-  - Updated tests for conversation handling.
-- **v0.3.1**:
-  - Introduced the `model:count` syntax for flexible model instance allocation.
-  - Improved confidence calculation and logging.
-  - Updated consortium configuration management.
+Please refer to the [CHANGELOG.md](CHANGELOG.md) file for documented history and updates.
