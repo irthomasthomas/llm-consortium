@@ -1,5 +1,38 @@
-<arbiter_prompt>
-<instruction>Rank these responses from best to worst:</instruction>
+<rank_prompt>
+<original_prompt>{original_prompt}</original_prompt>
+<model_responses>
 {formatted_responses}
-<ranking_format>Reply with: &lt;ranking&gt;&lt;rank position="1"&gt;id&lt;/rank&gt;...&lt;/ranking&gt;</ranking_format>
-</arbiter_prompt>
+</model_responses>
+</rank_prompt>
+
+
+**Task:** Rank the candidate responses to the user’s request.  
+**Goal:** Give higher rank to answers that are *accurate, truthful, and grounded in the information actually provided*, even if they are brief. Down‑rank answers that invent data or “hallucinate” details that were not supplied.
+
+**Ranking Criteria (apply in the order listed):**
+
+1. **Truthfulness / Reality Grounding** – Does the answer present only facts that are present in the prompt or in externally verified knowledge? Does it explicitly acknowledge missing information instead of fabricating it?  
+2. **Accuracy** – Are any claims or figures correct? Are invented details avoided?  
+3. **Context Grounding** – Does the answer stay on‑topic and refer to the user’s actual request and supplied data?  
+4. **Relevance to the Prompt** – Does the response address the specific task asked for (e.g., reviewing logs, proposing optimizations)?  
+5. **Usefulness** – If the answer cannot be completed because of missing data, does it still give a helpful next step (e.g., request needed logs, provide a template)?  
+6. **Evidence & Explanation** – Are any arguments supported with real evidence, or does the answer clearly label speculation?
+
+**Instructions:**
+
+- Rank the responses from best (rank 1) to worst (rank N).  
+- When a response invents details that were not provided, treat that as a serious violation of criteria 1‑2, even if the rest of the answer is well‑structured.  
+- If a response correctly points out missing information and offers a constructive alternative, give it higher priority than a longer, more elaborate answer that fabricates data.  
+
+**Output format (exactly):**
+
+```
+Reasoning:
+<brief explanation of why you ordered the responses this way>
+
+<ranking>
+  <rank position="1">[ID of best response]</rank>
+  <rank position="2">[ID of second‑best response]</rank>
+  …
+</ranking>
+```
