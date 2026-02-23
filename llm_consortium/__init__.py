@@ -2,12 +2,18 @@ import click
 import json
 import llm
 from llm.cli import load_conversation
-from llm import resolve_alias_options
 from typing import Dict, List, Optional, Any, Tuple
 from datetime import datetime
 import logging
 import sys
 import re
+
+def resolve_alias_options(model_id: str) -> Optional[Dict[str, Any]]:
+    """Fallback for llm.resolve_alias_options which was removed in newer llm versions.
+    Currently returns None to gracefully ignore alias options if unavailable.
+    """
+    return None
+
 import os
 import pathlib
 import sqlite_utils

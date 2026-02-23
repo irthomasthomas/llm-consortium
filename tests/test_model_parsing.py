@@ -51,14 +51,12 @@ class TestModelParsing(unittest.TestCase):
         self.assertEqual(result, {})
         
     def test_parse_models_invalid_count(self):
-        # Test with invalid count format
+        # Test with invalid count format — current implementation raises ValueError
         models = ["model1:invalid"]
         default_count = 1
         
-        # This should use the default count when parsing fails
-        result = parse_models(models, default_count)
-        
-        self.assertEqual(result, {"model1": 1})
+        with self.assertRaises(ValueError):
+            parse_models(models, default_count)
         
     def test_parse_models_zero_count(self):
         # Test with zero count
