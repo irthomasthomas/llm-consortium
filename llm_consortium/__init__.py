@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 import sys
 import re
+from .strategies.factory import create_strategy
 
 def resolve_alias_options(model_id: str) -> Optional[Dict[str, Any]]:
     """Fallback for llm.resolve_alias_options which was removed in newer llm versions.
@@ -266,6 +267,8 @@ class ConsortiumConfig(BaseModel):
     minimum_iterations: int = 1
     arbiter: Optional[str] = None
     judging_method: str = "default"
+    strategy: Optional[str] = None
+    strategy_params: Optional[Dict[str, Any]] = None
     manual_context: bool = Field(default=False, description="Use manual context management instead of automatic conversation objects")
 
     def to_dict(self):
@@ -284,6 +287,7 @@ class ConsortiumOrchestrator:
         self.minimum_iterations = config.minimum_iterations
         self.arbiter = config.arbiter or "gemini-2.0-flash"
         self.judging_method = config.judging_method
+        self.strategy = create_strategy(config.strategy, self, config.strategy_params)
         self.iteration_history: List[IterationContext] = []
         self.consortium_id: Optional[str] = None
         # Conversation management
@@ -561,6 +565,10 @@ class ConsortiumOrchestrator:
 
                 if self.system_prompt:
                     prompt_kwargs["system"] = self.system_prompt
+                
+                instance_sys_prompt = self.strategy.get_instance_system_prompt(model, instance + 1, self.system_prompt)
+                if instance_sys_prompt:
+                    prompt_kwargs["system"] = instance_sys_prompt
 
                 response = model_obj.prompt(xml_prompt, stream=False, **prompt_kwargs)
 
@@ -635,6 +643,10 @@ class ConsortiumOrchestrator:
 
                 if self.system_prompt:
                     prompt_kwargs["system"] = self.system_prompt
+
+                instance_sys_prompt = self.strategy.get_instance_system_prompt(model, instance + 1, self.system_prompt)
+                if instance_sys_prompt:
+                    prompt_kwargs["system"] = instance_sys_prompt
 
                 response = conversation.prompt(xml_prompt, stream=False, **prompt_kwargs)
 
@@ -1267,8 +1279,18 @@ def register_commands(cli):
         default=False,
         help="Use manual context construction"
     )
+    @click.option(
+        "--strategy",
+        help="Strategy to use (e.g., voting, elimination, role).",
+        default="default"
+    )
+    @click.option(
+        "--strategy-param", "strategy_params_list",
+        multiple=True,
+        help="Parameters for the strategy, format KEY=VALUE. Can be provided multiple times.",
+    )
     def save_command(name, models, count, arbiter, confidence_threshold, max_iterations,
-                     min_iterations, system, judging_method, manual_context):
+                     min_iterations, system, judging_method, manual_context, strategy, strategy_params_list):
         """Save a consortium configuration to be used as a model."""
         try:
             model_dict = parse_models(models, count)
@@ -1286,7 +1308,15 @@ def register_commands(cli):
                      raise click.ClickException(f"Error reading system prompt file '{system}': {e}")
              else:
                  system_prompt_content = system
-        # No default system prompt when saving? Or use DEFAULT_SYSTEM_PROMPT? Let's assume None if not provided.
+
+        # Parse strategy params
+        strategy_params = {}
+        for param in strategy_params_list:
+            if '=' in param:
+                k, v = param.split('=', 1)
+                strategy_params[k.strip()] = v.strip()
+            else:
+                strategy_params[param.strip()] = True
 
         # Validate confidence threshold
         if confidence_threshold > 1.0:
@@ -1306,6 +1336,8 @@ def register_commands(cli):
             minimum_iterations=min_iterations,
             system_prompt=system_prompt_content,
             judging_method=judging_method,
+            strategy=strategy,
+            strategy_params=strategy_params,
             manual_context=manual_context
         )
         try:

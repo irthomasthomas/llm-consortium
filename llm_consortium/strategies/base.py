@@ -105,3 +105,18 @@ class ConsortiumStrategy(ABC):
         # Subclasses can override this to track model performance, update scores,
         # manage elimination lists, etc., using `self.iteration_state`.
         pass
+
+    def get_instance_system_prompt(self, model: str, instance: int, default_prompt: Optional[str]) -> Optional[str]:
+        """
+        **OPTIONAL:** Allows a strategy to modify the system prompt per-instance.
+
+        Args:
+            model: The name of the model being invoked (e.g., 'gpt-4').
+            instance: The instance number (1-based index).
+            default_prompt: The base system prompt configured for the consortium.
+
+        Returns:
+            The modified system prompt, or None if no system prompt should be used.
+            Default implementation returns the `default_prompt` unmodified.
+        """
+        return default_prompt
