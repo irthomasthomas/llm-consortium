@@ -15,110 +15,19 @@ def resolve_alias_options(model_id: str) -> Optional[Dict[str, Any]]:
     """
     return None
 
-import os
-import pathlib
-import sqlite_utils
 from pydantic import BaseModel, Field
-import time  # added import for time
-import concurrent.futures  # Add concurrent.futures for parallel processing
-import threading  # Add threading for thread-local storage
-import secrets
-import uuid  # Keep this for PromptTracer only
+import concurrent.futures
+import time
+import pathlib
+import uuid
 
-class PromptTrace(BaseModel):
-    """Model for storing prompt trace information"""
-    trace_id: str
-    iteration: int
-    model: str
-    instance: int
-    prompt_text: str
-    response_text: str
-    timestamp: str
-    prompt_type: str  # 'model' or 'arbiter'
-    
-class PromptTracer:
-    """Manages tracing of prompts through consortium iterations"""
-    
-    def __init__(self, trace_id: Optional[str] = None):
-        self.trace_id = trace_id or str(uuid.uuid4())  # uuid is still needed here
-        self.traces: List[PromptTrace] = []
-        
-    def record_model_prompt(self, iteration: int, model: str, instance: int, 
-                           prompt: str, response: str) -> None:
-        """Record a prompt sent to a model"""
-        trace = PromptTrace(
-            trace_id=self.trace_id,
-            iteration=iteration,
-            model=model,
-            instance=instance,
-            prompt_text=prompt,
-            response_text=response,
-            timestamp=datetime.utcnow().isoformat(),
-            prompt_type='model'
-        )
-        self.traces.append(trace)
-        logger.debug(f"Recorded model prompt trace: {model}-{instance} iteration {iteration}")
-        
-    def record_arbiter_prompt(self, iteration: int, prompt: str, response: str) -> None:
-        """Record a prompt sent to the arbiter"""
-        trace = PromptTrace(
-            trace_id=self.trace_id,
-            iteration=iteration,
-            model='arbiter',
-            instance=0,
-            prompt_text=prompt,
-            response_text=response,
-            timestamp=datetime.utcnow().isoformat(),
-            prompt_type='arbiter'
-        )
-        self.traces.append(trace)
-        logger.debug(f"Recorded arbiter prompt trace: iteration {iteration}")
-        
-    def save_to_db(self) -> None:
-        """Save all traces to database"""
-        db = DatabaseConnection.get_connection()
-        db.execute("""
-            CREATE TABLE IF NOT EXISTS prompt_traces (
-                trace_id TEXT,
-                iteration INTEGER,
-                model TEXT,
-                instance INTEGER,
-                prompt_text TEXT,
-                response_text TEXT,
-                timestamp TEXT,
-                prompt_type TEXT,
-                PRIMARY KEY (trace_id, iteration, model, instance, prompt_type)
-            )
-        """)
-        
-        for trace in self.traces:
-            db["prompt_traces"].insert(trace.model_dump(), replace=True)
-        
-        logger.info(f"Saved {len(self.traces)} trace records with trace_id: {self.trace_id}")
-        
-    def export_to_dict(self) -> Dict[str, Any]:
-        """Export traces to a dictionary format"""        # Store evaluation data
-        try:
-            from .evaluation_store import EvaluationStore
-            eval_store = EvaluationStore()
-            eval_store.store_evaluation(
-                consortium_id=consortium_id or str(uuid.uuid4()),
-                iteration_id=iteration_count,
-                prompt_text=original_prompt,
-                arbiter_model=self.arbiter,
-                evaluated_models=list(self.models.keys()),
-                decision=final_result,
-                token_usage={}, 
-                duration_ms=0,
-            )
-        except Exception as e:
-            logger.warning(f"Failed to store evaluation: {e}")
-
-        return {
-            "trace_id": self.trace_id,
-            "total_traces": len(self.traces),
-            "traces": [trace.model_dump() for trace in self.traces]
-        }
+from .db import (
+    DatabaseConnection,
+    log_response,
+    save_consortium_run,
+    save_consortium_member,
+    save_arbiter_decision
+)
 
 # Read system prompt from file
 def _read_system_prompt() -> str:
@@ -196,63 +105,7 @@ setup_logging()
 logger = logging.getLogger(__name__)
 logger.debug("llm_karpathy_consortium module is being imported")
 
-class DatabaseConnection:
-    _thread_local = threading.local()
-
-    @classmethod
-    def get_connection(cls) -> sqlite_utils.Database:
-        """Get thread-local database connection to ensure thread safety."""
-        if not hasattr(cls._thread_local, 'db'):
-            # Use timeout=30 to wait for locks instead of failing immediately
-            import sqlite3
-            conn = sqlite3.connect(logs_db_path(), timeout=30)
-            cls._thread_local.db = sqlite_utils.Database(conn)
-        return cls._thread_local.db
-
-def _get_finish_reason(response_json: Dict[str, Any]) -> Optional[str]:
-    """Helper function to extract finish reason from various API response formats."""
-    if not isinstance(response_json, dict):
-        return None
-    # List of possible keys for finish reason (case-insensitive)
-    reason_keys = ['finish_reason', 'finishReason', 'stop_reason']
-
-    # Convert response to lowercase for case-insensitive matching
-    lower_response = {k.lower(): v for k, v in response_json.items()}
-
-    # Check each possible key
-    for key in reason_keys:
-        value = lower_response.get(key.lower())
-        if value:
-            return str(value).lower()
-
-    return None
-
-def log_response(response, model, consortium_run_id: Optional[str] = None):
-    """Log model response to database and log file."""
-    try:
-        db = DatabaseConnection.get_connection()
-        response.log_to_db(db)
-        
-        # Update consortium_run_id if provided
-        if consortium_run_id and hasattr(response, 'id'):
-            db.execute("UPDATE responses SET consortium_run_id = ? WHERE id = ?", [consortium_run_id, response.id])
-            logger.debug(f"Response from {model} logged with consortium_run_id: {consortium_run_id}")
-        else:
-            logger.debug(f"Response from {model} logged to database")
-
-        # Explicitly commit to release any locks held by this thread
-        db.conn.commit()
-
-        # Check for truncation in various formats
-        if response.response_json:
-            finish_reason = _get_finish_reason(response.response_json)
-            truncation_indicators = ['length', 'max_tokens', 'max_token']
-
-            if finish_reason and any(indicator in finish_reason for indicator in truncation_indicators):
-                logger.warning(f"Response from {model} truncated. Reason: {finish_reason}")
-
-    except Exception as e:
-        logger.error(f"Error logging to database: {e}")
+# Removed legacy imports and DB definitions; see db.py
 
 class IterationContext:
     def __init__(self, synthesis: Dict[str, Any], model_responses: List[Dict[str, Any]]):
@@ -294,20 +147,14 @@ class ConsortiumOrchestrator:
         self.model_conversations: Dict[str, llm.Conversation] = {}  # Key: f"{model_name}_{instance_id}"
         self.arbiter_conversation: Optional[llm.Conversation] = None
         self.manual_context = config.manual_context
-        self.tracer: Optional[PromptTracer] = None
-
     def enable_tracing(self, trace_id: Optional[str] = None) -> str:
         """Enable prompt tracing and return the trace ID"""
-        self.tracer = PromptTracer(trace_id)
-        logger.info(f"Prompt tracing enabled with trace_id: {self.tracer.trace_id}")
-        return self.tracer.trace_id
+        logger.info(f"Prompt tracing enabled (no-op in refactored version)")
+        return trace_id or "trace"
 
     def disable_tracing(self) -> None:
         """Disable prompt tracing"""
-        if self.tracer:
-            self.tracer.save_to_db()
-        self.tracer = None
-        logger.info("Prompt tracing disabled")
+        logger.info("Prompt tracing disabled (no-op in refactored version)")
 
     def _get_model_conversation(self, model_name: str, instance_id: int) -> Optional[llm.Conversation]:
         """Get or create a conversation for a specific model instance with error handling."""
@@ -425,9 +272,18 @@ class ConsortiumOrchestrator:
                 "raw_arbiter_response": raw_arbiter_response_final
             }
 
-        # Save traces if enabled
-        if self.tracer:
-            self.tracer.save_to_db()
+        # Save final run if consortium_id provided
+        if self.consortium_id:
+            save_consortium_run(
+                self.consortium_id,
+                self.config.strategy,
+                self.judging_method,
+                self.confidence_threshold,
+                self.max_iterations,
+                iteration_count,
+                final_result.get("confidence", 0.0),
+                original_prompt
+            )
 
         return {
             "original_prompt": original_prompt,
@@ -439,7 +295,7 @@ class ConsortiumOrchestrator:
                 "timestamp": datetime.utcnow().isoformat(),
                 "iteration_count": iteration_count,
                 "context_mode": "manual",
-                "trace_id": self.tracer.trace_id if self.tracer else None
+                "trace_id": None
             }
         }
 
@@ -502,9 +358,18 @@ class ConsortiumOrchestrator:
                 "raw_arbiter_response": raw_arbiter_response_final
             }
 
-        # Save traces if enabled
-        if self.tracer:
-            self.tracer.save_to_db()
+        # Save final run if consortium_id provided
+        if self.consortium_id:
+            save_consortium_run(
+                self.consortium_id,
+                self.config.strategy,
+                self.judging_method,
+                self.confidence_threshold,
+                self.max_iterations,
+                iteration_count,
+                final_result.get("confidence", 0.0),
+                original_prompt
+            )
 
         return {
             "original_prompt": original_prompt,
@@ -516,7 +381,7 @@ class ConsortiumOrchestrator:
                 "timestamp": datetime.utcnow().isoformat(),
                 "iteration_count": iteration_count,
                 "context_mode": "automatic",
-                "trace_id": self.tracer.trace_id if self.tracer else None
+                "trace_id": None
             }
         }
 
@@ -575,15 +440,15 @@ class ConsortiumOrchestrator:
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}", self.consortium_id)
                 
-                # Record trace if enabled
-                if self.tracer:
-                    self.tracer.record_model_prompt(iteration, model, instance + 1, xml_prompt, text)
+                if hasattr(response, 'id') and self.consortium_id:
+                    save_consortium_member(str(self.consortium_id), str(response.id), 'member', iteration, instance + 1)
                 
                 return {
                     "model": model,
                     "instance": instance + 1,
                     "response": text,
                     "confidence": self._parse_confidence_value(text),
+                    "response_id": getattr(response, 'id', None)
                 }
             except Exception as e:
                 if "RateLimitError" in str(e):
@@ -653,15 +518,21 @@ class ConsortiumOrchestrator:
                 text = response.text()
                 log_response(response, f"{model}-{instance + 1}", self.consortium_id)
                 
-                # Record trace if enabled
-                if self.tracer:
-                    self.tracer.record_model_prompt(iteration, model, instance + 1, xml_prompt, text)
+                if hasattr(response, 'id') and self.consortium_id:
+                    db = DatabaseConnection.get_connection()
+                    db.execute("""
+                        INSERT OR IGNORE INTO consortium_members 
+                        (run_id, response_id, role, iteration, member_index) 
+                        VALUES (?, ?, ?, ?, ?)
+                    """, [str(self.consortium_id), str(response.id), 'member', iteration, instance + 1])
+                    db.conn.commit()
                 
                 return {
                     "model": model,
                     "instance": instance + 1,
                     "response": text,
                     "confidence": self._parse_confidence_value(text),
+                    "response_id": getattr(response, 'id', None)
                 }
             except Exception as e:
                 if "RateLimitError" in str(e):
@@ -709,9 +580,8 @@ class ConsortiumOrchestrator:
             raw_arbiter_text = response.text()
             log_response(response, self.arbiter, self.consortium_id)
             
-            # Record arbiter trace if enabled
-            if self.tracer:
-                self.tracer.record_arbiter_prompt(iteration, arbiter_prompt, raw_arbiter_text)
+            if hasattr(response, 'id') and self.consortium_id:
+                save_consortium_member(str(self.consortium_id), str(response.id), 'arbiter', iteration, 0)
 
             try:
                 if self.judging_method == 'rank':
@@ -720,6 +590,10 @@ class ConsortiumOrchestrator:
                     parsed_result = self._parse_arbiter_response(raw_arbiter_text)
                 
                 parsed_result['raw_arbiter_response'] = raw_arbiter_text
+                
+                if hasattr(response, 'id') and self.consortium_id:
+                    save_arbiter_decision(str(self.consortium_id), iteration, str(response.id), parsed_result, self.judging_method)
+                
                 return parsed_result
             except Exception as e:
                 logger.error(f"Error parsing arbiter response: {e}")
@@ -805,9 +679,8 @@ Please evaluate these new responses based on the original prompt and your previo
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter, self.consortium_id)
         
-        # Record arbiter trace if enabled
-        if self.tracer:
-            self.tracer.record_arbiter_prompt(iteration, arbiter_prompt, raw_arbiter_text)
+        if hasattr(arbiter_response, 'id') and self.consortium_id:
+            save_consortium_member(str(self.consortium_id), str(arbiter_response.id), 'arbiter', iteration, 0)
 
         try:
             if self.judging_method == 'rank':
@@ -816,6 +689,10 @@ Please evaluate these new responses based on the original prompt and your previo
                 parsed_result = self._parse_arbiter_response(raw_arbiter_text)
             
             parsed_result['raw_arbiter_response'] = raw_arbiter_text
+            
+            if hasattr(arbiter_response, 'id') and self.consortium_id:
+                save_arbiter_decision(str(self.consortium_id), iteration, str(arbiter_response.id), parsed_result, self.judging_method)
+            
             return parsed_result
         except Exception as e:
             logger.error(f"Error parsing arbiter response: {e}")
@@ -1018,7 +895,8 @@ Please improve your response based on this feedback."""
             "dissent": "", 
             "needs_iteration": False, 
             "refinement_areas": [], 
-            "ranking": ranked_ids
+            "ranking": ranked_ids,
+            "chosen_response_id": top_response.get('response_id')
         }
 
 def parse_models(models: List[str], count: int) -> Dict[str, int]:
@@ -1071,7 +949,7 @@ class ConsortiumModel(llm.Model):
         return self._orchestrator
 
     def execute(self, prompt, stream, response, conversation):
-        consortium_id = secrets.token_hex(8)
+        consortium_id = str(uuid.uuid4())
         """Execute the consortium synchronously"""
         try:
             # Extract conversation history from the conversation object directly
@@ -1383,13 +1261,6 @@ def register_commands(cli):
         """Remove a saved consortium configuration."""
         db = DatabaseConnection.get_connection()
         # Ensure table exists before trying to delete
-        db.execute("""
-        CREATE TABLE IF NOT EXISTS consortium_configs (
-            name TEXT PRIMARY KEY,
-            config TEXT NOT NULL,
-            created_at TEXT DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
         try:
             # Check if it exists before deleting
             count = db["consortium_configs"].count_where("name = ?", [name])
@@ -1409,35 +1280,7 @@ def register_commands(cli):
     @click.option("--since", help="Show runs since date (YYYY-MM-DD)")
     def runs_command(limit, since):
         """List recent consortium executions"""
-        try:
-            from .evaluation_store import EvaluationStore
-            store = EvaluationStore()
-            runs = store.get_recent_runs(limit=limit, since=since)
-            
-            if not runs:
-                click.echo("No consortium runs found.")
-                return
-            
-            click.echo("🚀 Recent Consortium Runs")
-            click.echo("=" * 80)
-            
-            for run in runs:
-                click.echo(f"Run ID: {run['consortium_id']}")
-                click.echo(f"Timestamp: {run['timestamp']}")
-                click.echo(f"Models: {run['models']}")
-                click.echo(f"Final Confidence: {run['final_confidence']:.3f}")
-                click.echo(f"Iterations: {run.get('iteration_id', 'N/A')}")
-                try:
-                    tokens_data = json.loads(run.get('token_usage_json', '{}'))
-                    total_tokens = sum(tokens_data.values()) if isinstance(tokens_data, dict) else tokens_data
-                except (json.JSONDecodeError, TypeError, AttributeError):
-                    total_tokens = 'N/A'
-                click.echo(f"Total Tokens: {total_tokens}")
-                click.echo("-" * 80)
-                
-        except Exception as e:
-            logger.exception("Error listing runs")
-            raise click.ClickException(f"Failed to list runs: {e}")
+        click.echo("This command is temporarily disabled as we refactor storage to use a relational schema.")
 
     @consortium.command(name="export-training")
     @click.argument("output", type=click.Path(dir_okay=False, writable=True, path_type=pathlib.Path))
@@ -1446,79 +1289,14 @@ def register_commands(cli):
     @click.option("--min-confidence", type=float, help="Minimum confidence threshold")
     def export_training_command(output, since, model_filter, min_confidence):
         """Export evaluations as training data (JSONL format)"""
-        try:
-            from .evaluation_store import EvaluationStore
-            store = EvaluationStore()
-            
-            count = store.export_training_data(
-                output_path=str(output),
-                since=since,
-                model_filter=model_filter,
-                min_confidence=min_confidence
-            )
-            
-            click.echo(f"✅ Exported {count} training samples to {output}")
-            
-        except Exception as e:
-            logger.exception("Error exporting training data")
-            raise click.ClickException(f"Export failed: {e}")
+        click.echo("This command is temporarily disabled as we refactor storage to use a relational schema.")
 
     @consortium.command(name="run-info")
     @click.argument("consortium_id")
     @click.option("--json-output", is_flag=True, help="Output as JSON")
     def run_info_command(consortium_id, json_output):
         """Show detailed execution trace for a consortium run"""
-        try:
-            from .evaluation_store import EvaluationStore
-            import json
-            store = EvaluationStore()
-            run_info = store.get_run_details(consortium_id)
-            
-            if not run_info:
-                raise click.ClickException(f"No data found for consortium ID: {consortium_id}")
-            
-            if json_output:
-                click.echo(json.dumps(run_info, indent=2))
-            else:
-                click.echo(f"📊 Run Details: {consortium_id}")
-                click.echo("=" * 60)
-                click.echo(f"Timestamp: {run_info.get('timestamp', 'N/A')}")
-                click.echo(f"Arbiter: {run_info.get('arbiter_model', 'N/A')}")
-                
-                models_raw = run_info.get('evaluated_models', '{}')
-                try:
-                    models_dict = json.loads(models_raw)
-                    if isinstance(models_dict, dict):
-                        models_list = [f'{m} ({c})' for m, c in models_dict.items()]
-                    else:
-                        models_list = models_dict
-                except:
-                    models_list = [str(models_raw)]
-                click.echo(f"Models Used: {', '.join(models_list)}")
-
-                tokens_raw = run_info.get('token_usage_json', '{}')
-                try:
-                    tokens_dict = json.loads(tokens_raw)
-                    total_tokens = sum(tokens_dict.values()) if isinstance(tokens_dict, dict) else 0
-                except:
-                    total_tokens = 0
-                click.echo(f"Total Tokens: {total_tokens}")
-                click.echo(f"Duration: {run_info.get('duration_ms', 0)}ms")
-                click.echo(f"Confidence: {run_info.get('confidence', 0.0):.3f}")
-                
-                decision_raw = run_info.get('decision_json', '{}')
-                try:
-                    decision = json.loads(decision_raw)
-                    if isinstance(decision, dict) and 'synthesis' in decision:
-                        click.echo("\nFinal Synthesis:")
-                        click.echo("-" * 20)
-                        click.echo(decision['synthesis'])
-                except:
-                    pass
-                
-        except Exception as e:
-            logger.exception(f"Error retrieving run info for {consortium_id}")
-            raise click.ClickException(f"Failed to get run info: {e}")
+        click.echo("This command is temporarily disabled as we refactor storage to use a relational schema.")
 
 
     @consortium.command(name="list-traces")
