@@ -19,11 +19,12 @@ async def demo_elimination_strategy():
             'gemini-1.5-flash': 1,
         },
         arbiter='claude-3-opus-20240229',
+        judging_method='rank', # Required: Elimination now relies on Arbiter rankings
         strategy='elimination',
         strategy_params={
-            'elimination_threshold': 0.6,  # Eliminate models with avg confidence < 0.6
-            'keep_minimum': 2,             # Always keep at least 2 models
-            'elimination_delay': 1         # Start eliminating after 1st iteration
+            'eliminate_count': 1,  # Eliminate the lowest-ranked model each iteration
+            'keep_minimum': 2,     # Always keep at least 2 models
+            'elimination_delay': 1 # Start eliminating after 1st iteration
         },
         confidence_threshold=0.8,
         max_iterations=4,

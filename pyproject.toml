@@ -1,6 +1,6 @@
 [project]
 name = "llm-consortium"
-version = "0.7"
+version = "0.7.1"
 description = "LLM plugin implementing Andrej Karpathy's model consortium tweet"
 readme = "README.md"
 authors = [{name = "Thomas Hughes", email = "irthomasthomas@gmail.com"}]
@@ -28,7 +28,7 @@ llm_consortium = "llm_consortium"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.setuptools]
-packages = ["llm_consortium"]
+packages = ["llm_consortium", "llm_consortium.strategies"]
 
 [tool.setuptools.package-data]
 llm_consortium = [

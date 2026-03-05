@@ -1,6 +1,12 @@
 import unittest
 from unittest.mock import patch, MagicMock, call
-from llm_consortium import ConsortiumOrchestrator, DatabaseConnection, ConsortiumConfig
+import uuid
+from llm_consortium import (
+    ConsortiumOrchestrator, 
+    DatabaseConnection, 
+    ConsortiumConfig,
+    IterationContext
+)
 
 # Using a simplified config for tests
 TEST_CONFIG = ConsortiumConfig(
@@ -15,10 +21,13 @@ TEST_CONFIG = ConsortiumConfig(
 
 class TestConsortiumOrchestrator(unittest.TestCase):
     def setUp(self):
-        self.orchestrator = ConsortiumOrchestrator(config=TEST_CONFIG)
+        # Patch the save_consortium_run to avoid DB errors during orchestration
+        with patch('llm_consortium.orchestrator.save_consortium_run'):
+            self.orchestrator = ConsortiumOrchestrator(config=TEST_CONFIG)
 
-    @patch('llm_consortium.llm.get_model')
-    def test_get_model_response(self, mock_get_model):
+    @patch('llm_consortium.orchestrator.llm.get_model')
+    @patch('llm_consortium.orchestrator.save_consortium_member')
+    def test_get_model_response(self, mock_save_member, mock_get_model):
         mock_model = MagicMock()
         mock_response = MagicMock()
         mock_response.text.return_value = "<confidence>0.75</confidence> Test response text"
@@ -26,20 +35,20 @@ class TestConsortiumOrchestrator(unittest.TestCase):
         mock_get_model.return_value = mock_model
 
         # orchestrate is sync; test the manual single model response
+        # Passing an instance variable to mimic the behavior in _get_model_responses_manual
         result = self.orchestrator._get_single_model_response_manual(
             "model1", "Test prompt", instance=0, iteration=1
         )
         self.assertEqual(result["model"], "model1")
+        # Ensure we check based on what our mock returns
         self.assertEqual(result["response"], mock_response.text.return_value)
         self.assertEqual(result["confidence"], 0.75)
 
-    def test_parse_confidence_value(self):
-        # Confidence parsing is tested in test_confidence_parsing.py
-        pass
-
-    @patch('llm_consortium.llm.get_model')
-    @patch('llm_consortium.log_response')
-    def test_synthesize_responses(self, mock_log_response, mock_get_model):
+    @patch('llm_consortium.orchestrator.llm.get_model')
+    @patch('llm_consortium.orchestrator.log_response')
+    @patch('llm_consortium.orchestrator.save_consortium_member')
+    @patch('llm_consortium.orchestrator.save_arbiter_decision')
+    def test_synthesize_responses(self, mock_save_decision, mock_save_member, mock_log_response, mock_get_model):
         mock_arbiter = MagicMock()
         mock_response = MagicMock()
         mock_response.text.return_value = """
@@ -76,15 +85,19 @@ class TestConsortiumOrchestrator(unittest.TestCase):
 
     @patch.object(ConsortiumOrchestrator, '_get_model_responses_manual')
     @patch.object(ConsortiumOrchestrator, '_synthesize_responses_manual')
-    def test_orchestrate_single_iteration_success(self, mock_synthesize, mock_get_responses):
+    @patch('llm_consortium.orchestrator.save_consortium_run')
+    def test_orchestrate_single_iteration_success(self, mock_save_run, mock_synthesize, mock_get_responses):
         mock_get_responses.return_value = [
             {"model": "model1", "response": "Response 1", "confidence": 0.7, "id": 1},
             {"model": "model2", "response": "Response 2", "confidence": 0.8, "id": 2}
         ]
         mock_synthesize.return_value = {
-            "synthesis": "Final synthesis", "confidence": 0.9,
-            "analysis": "Final analysis", "dissent": "Final dissent",
-            "needs_iteration": False, "refinement_areas": [],
+            "synthesis": "Final synthesis", 
+            "confidence": 0.9,
+            "analysis": "Final analysis", 
+            "dissent": "Final dissent",
+            "needs_iteration": False, 
+            "refinement_areas": [],
             "raw_arbiter_response": "raw text"
         }
 
@@ -94,19 +107,23 @@ class TestConsortiumOrchestrator(unittest.TestCase):
         mock_get_responses.assert_called_once()
         mock_synthesize.assert_called_once()
         self.assertEqual(result["synthesis"]["confidence"], 0.9)
-        self.assertEqual(result["metadata"]["iteration_count"], 1)
+        self.assertEqual(result["metadata"]["total_iterations"], 1)
 
     @patch.object(ConsortiumOrchestrator, '_get_model_responses_manual')
     @patch.object(ConsortiumOrchestrator, '_synthesize_responses_manual')
-    def test_orchestrate_with_history(self, mock_synthesize, mock_get_responses):
+    @patch('llm_consortium.orchestrator.save_consortium_run')
+    def test_orchestrate_with_history(self, mock_save_run, mock_synthesize, mock_get_responses):
         mock_get_responses.return_value = [
             {"model": "model1", "response": "Response 1", "confidence": 0.7, "id": 1},
             {"model": "model2", "response": "Response 2", "confidence": 0.8, "id": 2}
         ]
         mock_synthesize.return_value = {
-            "synthesis": "Final synthesis with history", "confidence": 0.95,
-            "analysis": "Final analysis", "dissent": "Final dissent",
-            "needs_iteration": False, "refinement_areas": [],
+            "synthesis": "Final synthesis with history", 
+            "confidence": 0.95,
+            "analysis": "Final analysis", 
+            "dissent": "Final dissent",
+            "needs_iteration": False, 
+            "refinement_areas": [],
             "raw_arbiter_response": "raw text"
         }
 
@@ -119,12 +136,12 @@ class TestConsortiumOrchestrator(unittest.TestCase):
         mock_get_responses.assert_called_once()
         mock_synthesize.assert_called_once()
         self.assertEqual(result["synthesis"]["confidence"], 0.95)
-        self.assertEqual(result["metadata"]["iteration_count"], 1)
+        self.assertEqual(result["metadata"]["total_iterations"], 1)
         self.assertEqual(result["original_prompt"], current_prompt)
 
 
 class TestDatabaseConnection(unittest.TestCase):
-    @patch('llm_consortium.sqlite_utils.Database')
+    @patch('llm_consortium.db.sqlite_utils.Database')
     def test_get_connection(self, mock_database):
         # Ensure thread local storage is clean for this test
         if hasattr(DatabaseConnection._thread_local, 'db'):

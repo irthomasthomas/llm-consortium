@@ -5,13 +5,16 @@ implementing a consensus-based approach to model selection.
 """
 
 from .base import ConsortiumStrategy
-from typing import List, Dict, Any
+from typing import List, Dict, Any, TYPE_CHECKING
 from collections import Counter
 import difflib
 import re
 import logging
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from llm_consortium import IterationContext
 
 class VotingStrategy(ConsortiumStrategy):
     """
@@ -20,7 +23,7 @@ class VotingStrategy(ConsortiumStrategy):
     Strategy parameters (passed via params dict):
         - similarity_threshold: float (default 0.5)
           Threshold for considering two responses as similar (0.0-1.0)
-        - answer_length: int (default 100)
+        - answer_length: int (default 2000)
           Number of characters to compare for similarity matching
         - require_majority: bool (default False)
           If True, only select consensus if majority (>50%) agree
@@ -34,7 +37,7 @@ class VotingStrategy(ConsortiumStrategy):
             self.params.get('similarity_threshold', 0.5)
         )
         self.answer_length = int(
-            self.params.get('answer_length', 100)
+            self.params.get('answer_length', 2000)
         )
         self.require_majority = bool(
             self.params.get('require_majority', False)
@@ -71,18 +74,42 @@ class VotingStrategy(ConsortiumStrategy):
     
     def _calculate_similarity(self, text1: str, text2: str) -> float:
         """Calculate similarity between two text snippets."""
-        # Normalize texts: lowercase, remove extra whitespace and punctuation
+        # Common conversational preambles to strip
+        preamble_patterns = [
+            r"^(certainly|sure|okay|ok|absolutely|i can help with that|here is|here's|the answer is|based on the information)\b",
+            r"^(i'd be happy|i would be happy|let me help|let's look at this)\b",
+            r"^\s*[\!\.\,\:\;]+\s*" # Leading punctuation
+        ]
+
         def normalize(text):
-            text = text.lower()
+            text = text.lower().strip()
+            
+            # Remove common conversational prefixes (apply a few times to catch chains)
+            for _ in range(3):
+                changed = False
+                for pattern in preamble_patterns:
+                    new_text = re.sub(pattern, "", text, flags=re.IGNORECASE).strip()
+                    if new_text != text:
+                        text = new_text
+                        changed = True
+                if not changed:
+                    break
+            
             # Remove common punctuation
             text = re.sub(r'[^\w\s]', '', text)
             # Normalize whitespace
             text = re.sub(r'\s+', ' ', text.strip())
             return text
         
-        norm1 = normalize(text1)
-        norm2 = normalize(text2)
+        # Normalize the strings before slicing to ensure we compare the content
+        n1: str = normalize(text1)
+        n2: str = normalize(text2)
+        norm1 = n1[:self.answer_length]
+        norm2 = n2[:self.answer_length]
         
+        if not norm1 or not norm2:
+            return 1.0 if norm1 == norm2 else 0.0
+
         # Use difflib's sequence matcher for similarity
         similarity = difflib.SequenceMatcher(None, norm1, norm2).ratio()
         return similarity
@@ -101,15 +128,15 @@ class VotingStrategy(ConsortiumStrategy):
             
             # Start a new group
             current_group = [response]
-            current_text = response['response'][:self.answer_length]
+            current_text = response.get('response', '')
             used_indices.add(i)
             
-            # Find all similar responses (only those with higher similarity)
+            # Find all similar responses
             for j, other in enumerate(responses):
                 if j <= i or j in used_indices:
                     continue
                 
-                other_text = other['response'][:self.answer_length]
+                other_text = other.get('response', '')
                 similarity = self._calculate_similarity(current_text, other_text)
                 
                 # Only add to group if similarity is high enough

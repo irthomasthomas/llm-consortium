@@ -12,21 +12,27 @@ logger = logging.getLogger(__name__)
 
 class EliminationStrategy(ConsortiumStrategy):
     """
-    Strategy that eliminates worst-performing models each iteration.
+    Strategy that eliminates worst-performing models each iteration based on Arbiter ranking.
     
     Strategy parameters (passed via params dict):
-        - elimination_threshold: float (default 0.6)
-          Models with average confidence < this are eliminated
+        - eliminate_count: int (default 1)
+          Number of lowest-ranked models to eliminate per round.
+        - eliminate_fraction: float (default 0.0)
+          Proportion of current active models to eliminate per round. If both 
+          count and fraction are used, the maximum of the two is applied.
         - keep_minimum: int (default 2)
-          Never eliminate below this many models
+          Never eliminate if it would drop the active models below this number.
         - elimination_delay: int (default 1)
-          Number of iterations to wait before starting elimination
+          Number of iterations to wait before starting elimination.
     """
     
     def _validate_params(self):
         """Validate strategy-specific parameters"""
-        self.elimination_threshold = float(
-            self.params.get('elimination_threshold', 0.6)
+        self.eliminate_count = int(
+            self.params.get('eliminate_count', 1)
+        )
+        self.eliminate_fraction = float(
+            self.params.get('eliminate_fraction', 0.0)
         )
         self.keep_minimum = int(
             self.params.get('keep_minimum', 2)
@@ -35,8 +41,10 @@ class EliminationStrategy(ConsortiumStrategy):
             self.params.get('elimination_delay', 1)
         )
         
-        if self.elimination_threshold < 0 or self.elimination_threshold > 1:
-            raise ValueError("elimination_threshold must be between 0 and 1")
+        if self.eliminate_count < 0:
+            raise ValueError("eliminate_count must be non-negative")
+        if self.eliminate_fraction < 0 or self.eliminate_fraction > 1:
+            raise ValueError("eliminate_fraction must be between 0 and 1")
         if self.keep_minimum < 1:
             raise ValueError("keep_minimum must be at least 1")
         if self.elimination_delay < 0:
@@ -46,7 +54,6 @@ class EliminationStrategy(ConsortiumStrategy):
         """Initialize elimination tracking"""
         super().initialize_state()
         self.iteration_state['eliminated_models'] = set()
-        self.iteration_state['model_scores'] = {}  # model -> list of confidences
         self.iteration_state['iteration_count'] = 0
     
     def select_models(self, available_models: Dict[str, int], 
@@ -84,51 +91,54 @@ class EliminationStrategy(ConsortiumStrategy):
         return successful_responses
     
     def update_state(self, iteration_context: 'IterationContext'):
-        """Eliminate low-confidence models after each iteration"""
+        """Eliminate worst-ranked models after each iteration"""
         from llm_consortium import IterationContext
         
         synthesis = iteration_context.synthesis
         model_responses = iteration_context.model_responses
         iteration = self.iteration_state['iteration_count']
         
-        # Track confidence per model
-        for response in model_responses:
-            if 'error' not in response:
-                model = response['model']
-                # Extract confidence from response if available
-                confidence = response.get('confidence', 0.5)
-                
-                # Update running average
-                if model not in self.iteration_state['model_scores']:
-                    self.iteration_state['model_scores'][model] = []
-                self.iteration_state['model_scores'][model].append(confidence)
-        
         # Only eliminate after delay period
         if iteration < self.elimination_delay:
             logger.debug(f"[EliminationStrategy] Skipping elimination "
                         f"(iteration {iteration} < delay {self.elimination_delay})")
             return
-        
-        # Eliminate underperforming models
+            
+        ranking = synthesis.get('ranking', [])
+        if not ranking:
+            logger.warning("[EliminationStrategy] No ranking found in synthesis! This strategy requires a ranking-capable arbiter (judging_method='rank').")
+            return
+            
         eliminated = self.iteration_state['eliminated_models']
-        remaining_models = set(iteration_context.selected_models.keys()) - eliminated
+        current_active = {r.get('id'): r.get('model') for r in model_responses if r.get('model') not in eliminated and r.get('id') is not None}
         
-        if len(remaining_models) > self.keep_minimum:
-            models_to_eliminate = []
+        if len(current_active) <= self.keep_minimum:
+            return
             
-            for model in remaining_models:
-                if model in self.iteration_state['model_scores']:
-                    confidences = self.iteration_state['model_scores'][model]
-                    avg_confidence = sum(confidences) / len(confidences)
-                    
-                    if avg_confidence < self.elimination_threshold:
-                        # Check if eliminating this would keep us above minimum
-                        if len(remaining_models) - len(models_to_eliminate) > self.keep_minimum:
-                            models_to_eliminate.append(model)
-                            logger.info(f"[EliminationStrategy] Marking {model} "
-                                       f"for elimination (avg confidence: {avg_confidence:.2f})")
+        # Count how many we are supposed to eliminate
+        target_eliminate = self.eliminate_count
+        if self.eliminate_fraction > 0:
+            fraction_count = int(len(current_active) * self.eliminate_fraction)
+            target_eliminate = max(target_eliminate, fraction_count)
             
-            # Actually eliminate the models
-            for model in models_to_eliminate:
-                eliminated.add(model)
-                logger.info(f"[EliminationStrategy] Eliminated {model}")
+        # Prevent eliminating beyond keep_minimum
+        max_can_eliminate = len(current_active) - self.keep_minimum
+        target_eliminate = min(target_eliminate, max_can_eliminate)
+        
+        if target_eliminate <= 0:
+            return
+            
+        # The ranking array is ordered [best_id, second_best_id, ... worst_id]
+        # Gather active ranked IDs maintaining their order
+        # Fallback handling in case of parser mismatch
+        active_ranked_ids = [rid for rid in ranking if rid in current_active]
+        if not active_ranked_ids:
+            return
+
+        # Take the worst-ranked active models
+        to_eliminate_ids = active_ranked_ids[-target_eliminate:]
+        
+        for rid in to_eliminate_ids:
+            model = current_active[rid]
+            eliminated.add(model)
+            logger.info(f"[EliminationStrategy] Eliminated worst-ranked model: {model} (Response ID: {rid})")

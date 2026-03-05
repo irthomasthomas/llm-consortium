@@ -13,6 +13,8 @@ Configuration object for consortium settings. Built upon `pydantic.BaseModel`.
 - `minimum_iterations: int`: Minimum rounds of iterations (default 1).
 - `arbiter: Optional[str]`: Model name to use as the arbiter.
 - `judging_method: str`: Method the arbiter uses (e.g., 'default' or 'rank').
+- `strategy: str`: Strategy to use (e.g., 'default', 'voting', 'elimination').
+- `strategy_params: Optional[Dict[str, Any]]`: Parameters for the strategy.
 - `manual_context: bool`: Use manual context management instead of automatic conversation objects.
 
 ### ConsortiumOrchestrator
@@ -33,19 +35,20 @@ Convenience function to create a configured orchestrator.
 
 ```python
 def create_consortium(
-    models: list[str],
+    models: Any,
+    arbiter: Optional[str] = None,
     confidence_threshold: float = 0.8,
     max_iterations: int = 3,
-    min_iterations: int = 1,
-    arbiter: Optional[str] = None,
-    judging_method: str = "default",
+    minimum_iterations: int = 1,
     system_prompt: Optional[str] = None,
-    default_count: int = 1,
-    raw: bool = False,
+    judging_method: str = "default",
+    manual_context: bool = False,
+    strategy: str = "default",
+    strategy_params: Optional[Dict[str, Any]] = None
 ) -> ConsortiumOrchestrator:
     """
     Create and return a ConsortiumOrchestrator.
-    - models: list of model names. To specify instance counts, use the format "model:count".
+    - models: dictionary of models or list of model names. To specify instance counts in a list, use the format "model:count".
     - system_prompt: if not provided, the default system prompt is used.
     """
 ```

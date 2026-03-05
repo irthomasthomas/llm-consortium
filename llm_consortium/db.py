@@ -135,21 +135,17 @@ def save_consortium_run(
 ):
     try:
         db = DatabaseConnection.get_connection()
-        db.execute("""
-            INSERT OR IGNORE INTO consortium_runs 
-            (id, created_at, strategy, judging_method, confidence_threshold, max_iterations, iteration_count, final_confidence, user_prompt)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            run_id,
-            datetime.datetime.utcnow().isoformat(),
-            strategy or "default",
-            judging_method,
-            confidence_threshold,
-            max_iterations,
-            iteration_count,
-            final_confidence,
-            user_prompt
-        ])
+        db["consortium_runs"].insert({
+            "id": run_id,
+            "created_at": datetime.datetime.utcnow().isoformat(),
+            "strategy": strategy or "default",
+            "judging_method": judging_method,
+            "confidence_threshold": confidence_threshold,
+            "max_iterations": max_iterations,
+            "iteration_count": iteration_count,
+            "final_confidence": final_confidence,
+            "user_prompt": user_prompt
+        }, ignore=True)
         db.conn.commit()
     except Exception as e:
         logger.error(f"Error persisting consortium_run: {e}")
@@ -163,11 +159,13 @@ def save_consortium_member(
 ):
     try:
         db = DatabaseConnection.get_connection()
-        db.execute("""
-            INSERT OR IGNORE INTO consortium_members 
-            (run_id, response_id, role, iteration, member_index) 
-            VALUES (?, ?, ?, ?, ?)
-        """, [run_id, response_id, role, iteration, member_index])
+        db["consortium_members"].insert({
+            "run_id": run_id,
+            "response_id": response_id,
+            "role": role,
+            "iteration": iteration,
+            "member_index": member_index
+        }, ignore=True)
         db.conn.commit()
     except Exception as e:
         logger.error(f"Error saving consortium member: {e}")
@@ -182,17 +180,17 @@ def save_arbiter_decision(
     try:
         db = DatabaseConnection.get_connection()
         chosen_id = parsed_result.get('chosen_response_id')
-        db.execute("""
-            INSERT OR IGNORE INTO arbiter_decisions 
-            (run_id, iteration, response_id, chosen_response_id, confidence, synthesis, decision_json, ranking_json, refinement_areas)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, [
-            run_id, iteration, response_id, chosen_id,
-            parsed_result.get('confidence', 0.0), parsed_result.get('synthesis', ''),
-            json.dumps(parsed_result) if judging_method != 'rank' else None,
-            json.dumps(parsed_result.get('ranking', [])) if judging_method == 'rank' else None,
-            json.dumps(parsed_result.get('refinement_areas', []))
-        ])
+        db["arbiter_decisions"].insert({
+            "run_id": run_id,
+            "iteration": iteration,
+            "response_id": response_id,
+            "chosen_response_id": chosen_id,
+            "confidence": parsed_result.get('confidence', 0.0),
+            "synthesis": parsed_result.get('synthesis', ''),
+            "decision_json": json.dumps(parsed_result) if judging_method != 'rank' else None,
+            "ranking_json": json.dumps(parsed_result.get('ranking', [])) if judging_method == 'rank' else None,
+            "refinement_areas": json.dumps(parsed_result.get('refinement_areas', []))
+        }, ignore=True)
         db.conn.commit()
     except Exception as e:
         logger.error(f"Error logging arbiter decision: {e}")
