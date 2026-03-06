@@ -106,7 +106,7 @@ class ConsortiumModel(llm.Model):
             # Lazy import to avoid circular dependency
             from .orchestrator import ConsortiumOrchestrator
             try:
-                self._orchestrator = ConsortiumOrchestrator(self.config)
+                self._orchestrator = ConsortiumOrchestrator(self.config, config_name=self.model_id)
             except Exception as e:
                 raise llm.ModelError(f"Failed to initialize consortium: {e}")
         return self._orchestrator

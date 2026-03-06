@@ -142,3 +142,28 @@ class EliminationStrategy(ConsortiumStrategy):
             model = current_active[rid]
             eliminated.add(model)
             logger.info(f"[EliminationStrategy] Eliminated worst-ranked model: {model} (Response ID: {rid})")
+
+    def prepare_iteration_prompt(self, model_id: str, instance: int, original_prompt: str, iteration: int) -> str:
+        """
+        Implements a cache-optimized prompt structure for subsequent iterations.
+        """
+        if not self.orchestrator.iteration_history:
+             return original_prompt
+             
+        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        refinement_areas = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("refinement_areas", [])
+        
+        refinement_text = ""
+        if refinement_areas:
+            refinement_text = "\nSpecific areas to refine:\n" + "\n".join(f"- {area}" for area in refinement_areas) + "\n"
+        
+        guidance = f"""Iteration Guidance:
+Please improve upon the previous iteration based on this synthesis:
+{prev_synth}
+{refinement_text}"""
+
+        if getattr(self.orchestrator, 'manual_context', False):
+            # Cache-optimized layout
+            return f"Original Context/Prompt: {original_prompt}\n---\n{guidance.strip()}"
+        else:
+            return guidance.strip()

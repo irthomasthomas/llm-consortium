@@ -15,7 +15,7 @@ class TestVotingStrategy:
         strategy = VotingStrategy(mock_orchestrator)
         
         assert strategy.similarity_threshold == 0.5
-        assert strategy.answer_length == 100
+        assert strategy.answer_length == 2000
         assert strategy.require_majority is False
         assert strategy.fallback_to_all is True
     

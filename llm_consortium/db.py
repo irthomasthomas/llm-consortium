@@ -36,13 +36,15 @@ class DatabaseConnection:
                 CREATE TABLE IF NOT EXISTS consortium_runs (
                     id TEXT PRIMARY KEY,
                     created_at TEXT,
+                    config_name TEXT,
                     strategy TEXT,
                     judging_method TEXT,
                     confidence_threshold REAL,
                     max_iterations INTEGER,
                     iteration_count INTEGER,
                     final_confidence REAL,
-                    user_prompt TEXT
+                    user_prompt TEXT,
+                    FOREIGN KEY (config_name) REFERENCES consortium_configs(name)
                 )
             """)
             db.execute("""
@@ -131,13 +133,15 @@ def save_consortium_run(
     max_iterations: int,
     iteration_count: int,
     final_confidence: float,
-    user_prompt: str
+    user_prompt: str,
+    config_name: Optional[str] = None
 ):
     try:
         db = DatabaseConnection.get_connection()
         db["consortium_runs"].insert({
             "id": run_id,
             "created_at": datetime.datetime.utcnow().isoformat(),
+            "config_name": config_name,
             "strategy": strategy or "default",
             "judging_method": judging_method,
             "confidence_threshold": confidence_threshold,
@@ -145,7 +149,7 @@ def save_consortium_run(
             "iteration_count": iteration_count,
             "final_confidence": final_confidence,
             "user_prompt": user_prompt
-        }, ignore=True)
+        }, ignore=True, alter=True)
         db.conn.commit()
     except Exception as e:
         logger.error(f"Error persisting consortium_run: {e}")

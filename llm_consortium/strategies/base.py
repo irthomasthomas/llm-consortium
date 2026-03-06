@@ -120,3 +120,30 @@ class ConsortiumStrategy(ABC):
             Default implementation returns the `default_prompt` unmodified.
         """
         return default_prompt
+
+    def prepare_iteration_prompt(self, model_id: str, instance: int, original_prompt: str, iteration: int) -> str:
+        """
+        **OPTIONAL:** Prepares the prompt for a subsequent iteration (iteration > 1).
+        By default, this provides a naive implementation. Strategies should override this
+        to create cache-optimized prompts.
+
+        Args:
+            model_id: The ID of the model being prompted.
+            instance: The model instance number.
+            original_prompt: The initial user prompt.
+            iteration: The current iteration number.
+
+        Returns:
+            The formatted prompt string for this iteration.
+        """
+        if not self.orchestrator.iteration_history:
+             return original_prompt
+             
+        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        
+        guidance = f"""Iteration Guidance:\nPlease improve upon the previous iteration based on this synthesis:\n{prev_synth}"""
+        
+        if getattr(self.orchestrator, 'manual_context', False):
+             return f"Original Context/Prompt: {original_prompt}\n---\n{guidance}"
+        else:
+             return guidance

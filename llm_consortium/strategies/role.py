@@ -86,3 +86,25 @@ class RoleStrategy(ConsortiumStrategy):
             return base if base else None
             
         return f"{base}\n{modifier}".strip()
+
+    def prepare_iteration_prompt(self, model_id: str, instance: int, original_prompt: str, iteration: int) -> str:
+        """
+        Implements a cache-optimized prompt structure for subsequent iterations,
+        ensuring the role or personality is heavily reflected.
+        """
+        if not self.orchestrator.iteration_history:
+             return original_prompt
+             
+        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        
+        guidance = f"""Iteration Guidance:
+Please improve upon the previous iteration based on this synthesis:
+{prev_synth}
+
+Remember to strictly adhere to your assigned cognitive role/personality trait matrix."""
+
+        if getattr(self.orchestrator, 'manual_context', False):
+            # Cache-optimized layout
+            return f"Original Context/Prompt: {original_prompt}\n---\n{guidance}"
+        else:
+            return guidance

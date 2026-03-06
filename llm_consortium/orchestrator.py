@@ -42,8 +42,9 @@ class IterationContext:
         self.model_responses = model_responses
 
 class ConsortiumOrchestrator:
-    def __init__(self, config: ConsortiumConfig):
+    def __init__(self, config: ConsortiumConfig, config_name: Optional[str] = None):
         self.config = config
+        self.config_name = config_name
         self.models = config.models
         self.system_prompt = config.system_prompt
         self.confidence_threshold = config.confidence_threshold
@@ -80,7 +81,8 @@ class ConsortiumOrchestrator:
             max_iterations=self.max_iterations,
             iteration_count=0,
             final_confidence=0.0,
-            user_prompt=prompt
+            user_prompt=prompt,
+            config_name=self.config_name
         )
         
         for iteration in range(1, self.max_iterations + 1):
@@ -165,13 +167,9 @@ class ConsortiumOrchestrator:
             if self._conversation_history:
                 full_prompt += f"{self._conversation_history}\n\n"
             
-            if self.iteration_history:
-                 full_prompt += "Previous Synthesis:\n"
-                 prev_synthesis = self.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
-                 full_prompt += prev_synthesis + "\n\n"
-                 full_prompt += "Please provide an improved response.\n\n"
-            
-            full_prompt += f"Current Question: {prompt}"
+            # Delegate prompt formulation entirely to strategy to maximize cache hits
+            strategy_prompt = self.strategy.prepare_iteration_prompt(model_id, instance, prompt, iteration)
+            full_prompt += strategy_prompt
             
             options = {}
             alias_opts = resolve_alias_options(model_id)
@@ -220,7 +218,8 @@ class ConsortiumOrchestrator:
             max_iterations=self.max_iterations,
             iteration_count=0,
             final_confidence=0.0,
-            user_prompt=prompt
+            user_prompt=prompt,
+            config_name=self.config_name
         )
         
         model_tasks = []
@@ -296,10 +295,10 @@ class ConsortiumOrchestrator:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(active_tasks) or 1, 10)) as executor:
             future_to_task = {}
             for task in active_tasks:
-                 iter_prompt = prompt
-                 if self.iteration_history:
-                      prev_synth = self.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
-                      iter_prompt = f"Previous iteration synthesis:\n{prev_synth}\n\nPlease improve upon this based on the original prompt: {prompt}"
+                 # Always delegate so iteration 1 and >1 share the same cached prefix
+                 iter_prompt = self.strategy.prepare_iteration_prompt(
+                     task["model_id"], task["instance"], prompt, iteration_idx
+                 )
 
                  future = executor.submit(self._get_single_response_automatic, task, iter_prompt, iteration_idx)
                  future_to_task[future] = task
@@ -561,7 +560,8 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
                      confidence_threshold: float = 0.8, max_iterations: int = 3,
                      minimum_iterations: int = 1, system_prompt: Optional[str] = None,
                      judging_method: str = "default", manual_context: bool = False,
-                     strategy: str = "default", strategy_params: Optional[Dict[str, Any]] = None) -> ConsortiumOrchestrator:
+                     strategy: str = "default", strategy_params: Optional[Dict[str, Any]] = None,
+                     config_name: Optional[str] = None) -> ConsortiumOrchestrator:
     
     from .models import parse_models
     
@@ -581,4 +581,4 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
         strategy=strategy,
         strategy_params=strategy_params
     )
-    return ConsortiumOrchestrator(config)
+    return ConsortiumOrchestrator(config, config_name=config_name)

@@ -28,3 +28,23 @@ class DefaultStrategy(ConsortiumStrategy):
         return successful_responses
 
     # No need to override update_state or initialize_state as this strategy is stateless.
+
+    def prepare_iteration_prompt(self, model_id: str, instance: int, original_prompt: str, iteration: int) -> str:
+        """
+        Implements a cache-optimized prompt structure for subsequent iterations.
+        Places the long, static original prompt BEFORE the dynamic iteration history.
+        """
+        if not self.orchestrator.iteration_history:
+             return original_prompt
+             
+        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        
+        guidance = f"""Iteration Guidance:
+Please improve upon the previous iteration based on this synthesis:
+{prev_synth}"""
+
+        if getattr(self.orchestrator, 'manual_context', False):
+            # Cache-optimized layout: Static content first, dynamic content last
+            return f"Original Context/Prompt: {original_prompt}\n---\n{guidance}"
+        else:
+            return guidance
