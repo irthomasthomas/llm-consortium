@@ -1,10 +1,13 @@
 # TODO
 
-## Restore Strategy Implementations
+## Completed
+- [x] **Restore Strategy Implementations**: `VotingStrategy`, `EliminationStrategy`, and `SemanticClusteringStrategy` are fully integrated.
+- [x] **Relational Schema**: Migrated to a robust relational schema for runs, members, and decisions.
+- [x] **Packaging Update**: Bumped to v0.8.0, added optional extras for `embeddings`, `visualize`, and `dev`. (2026-03-06)
+- [x] **CLI Enhancements**: Re-enabled `runs`, `run-info`, and added `visualize-run`.
 
-- **Context**: The `VotingStrategy` and `EliminationStrategy` classes are fully implemented in `llm_consortium/strategies/` and have verified tests. However, the current API entry point `create_consortium` inside `llm_consortium/__init__.py` no longer utilizes or accepts a `strategy` string.
-- **Action Items**:
-  1. Update `ConsortiumConfig` to accept a `strategy` parameter and `strategy_params`.
-  2. Instantiate the corresponding strategy via the `StrategyFactory` inside `ConsortiumOrchestrator.__init__` or `create_consortium`.
-  3. Re-wire `ConsortiumOrchestrator.orchestrate` to use the instantiated strategy's `select_models` and `process_responses` methods during iteration iterations instead of the hardcoded default behavior.
-  4. (Done) Updated `API.md` to reflect the available strategies (`voting`, `elimination`, `default`) and their configuration options.
+## Pending / Future Work
+- [ ] **Real Provider-Backed Comparison**: Conduct evaluations with real model providers to assess answer quality across strategies.
+- [ ] **Streaming Arbiter**: Implement streaming support for the arbiter's synthesis response in `ConsortiumModel.execute`.
+- [ ] **Automatic Strategy Parameter UI**: Improve CLI to better discover and validate strategy-specific parameters.
+- [ ] **HDBSCAN Optimization**: Tune HDBSCAN parameters and fallback logic for better clustering on small sample sizes.

@@ -23,3 +23,17 @@ Release 2025.02.23
   - **Context Management Improvements**: Refactored orchestration to explicitly support `manual` and `automatic` context modes, deprecating older conversation managers.
   - **Prompting Improvements**: Migrated internal prompt templates to XML formats (`system_prompt.xml`, `arbiter_prompt.xml`, `iteration_prompt.xml`, etc.) and refined rank-prompt criteria for truthfulness and reality grounding.
   - **Housekeeping**: Deprecated obsolete files and validation scripts, consolidated gitignores, aligned test suite with new API, and added token usage aggregation.
+
+Release 2026.03.06 (Version 0.8.0)
+- Semantic embedding and geometric consensus work:
+  - Added embedding backend abstraction with OpenAI, sentence-transformers, deterministic fallback embeddings, and Chutes `qwen3-embedding-8b` support.
+  - Added `SemanticClusteringStrategy` with DBSCAN, HDBSCAN fallback handling, and tropical centroid support.
+  - Integrated geometric confidence and centroid persistence into arbiter synthesis.
+  - Added persistence for response embeddings, consensus clusters, centroid vectors, geometric confidence, and cached visualization JSON.
+  - Added Plotly/t-SNE run visualization export via `llm consortium visualize-run`.
+  - Added CLI/config support for `--embedding-backend`, `--embedding-model`, `--clustering-algorithm`, `--cluster-eps`, and `--cluster-min-samples`.
+  - Added `llm consortium strategies` and fixed repeated `--strategy-param` accumulation for list-style parameters such as repeated role definitions.
+  - Enforced `judging_method=rank` when `strategy=elimination`.
+  - Fixed run summary persistence so `iteration_count` and `final_confidence` are updated after orchestration.
+  - Fixed visualization persistence so exporting a run does not overwrite existing consortium run metadata.
+  - Validation status: full test suite passing locally; live Chutes embedding smoke test successful; real provider-backed answer-quality comparison still pending.

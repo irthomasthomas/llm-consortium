@@ -27,7 +27,10 @@ flowchart TD
 - **Multi-Model Orchestration**: Coordinate responses from multiple models in parallel.
 - **Iterative Refinement**: Automatically refine output until a confidence threshold is achieved.
 - **Advanced Arbitration**: Uses a designated arbiter model to synthesize and evaluate responses.
+- **Semantic Consensus Filtering**: Cluster response embeddings and keep the densest semantic region before arbitration.
+- **Geometric Confidence**: Persist centroid-based agreement metadata alongside arbiter decisions.
 - **Database Logging**: SQLite-backed logging of all interactions.
+- **Embedding Visualization**: Project saved run embeddings and export HTML visualizations.
 - **Configurable Parameters**: Adjustable confidence thresholds, iteration limits, and model selection.
 - **Flexible Model Instance Counts**: Specify individual instance counts via the syntax `model:count`.
 - **Conversation Continuation**: Continue previous conversations using the `-c` or `--cid` flags, just like with standard `llm` models. **(New in v0.3.2)**
@@ -54,29 +57,40 @@ pipx install llm
 ```
 Then install the consortium plugin:
 ```bash
-llm install llm-consortium
-# Or to install directly from this repo
-# llm install -e .
+llm install "llm-consortium[embeddings,visualize]"
+# Or to install directly from this repo (requires extras for full features)
+# llm install -e ".[embeddings,visualize,dev]"
 ```
+
+For semantic clustering and visualization support, use the `[embeddings]` and `[visualize]` extras. These provide:
+- **embeddings**: `scikit-learn`, `hdbscan`, `openai`, `sentence-transformers`
+- **visualize**: `plotly`
+
+Optional provider-specific bits:
+- `CHUTES_API_TOKEN` for `--embedding-backend chutes`
+- OpenAI credentials for `--embedding-backend openai`
 
 ## Command Line Usage
 
-The `consortium` command now defaults to the `run` subcommand for concise usage.
+Basic usage requires you to first save a consortium configuration (e.g., named `my-consortium`):
 
-Basic usage:
 ```bash
-llm consortium "What are the key considerations for AGI safety?"
+llm consortium save my-consortium \
+    -m o3-mini:1 -m gpt-4o:2 -m gemini-2:3 \
+    --arbiter gemini-2 \
+    --confidence-threshold 0.8
 ```
-Or, if you have saved a consortium model (e.g., named `my-consortium`):
+
+Then invoke it using the standard `llm` model syntax:
 ```bash
 llm -m my-consortium "What are the key considerations for AGI safety?"
 ```
 
-This command will:
-1. Send your prompt to multiple models in parallel (using the specified instance counts, if provided).
+This sequence will:
+1. Send your prompt to multiple models in parallel (using the specified instance counts).
 2. Gather responses along with analysis and confidence ratings.
 3. Use an arbiter model to synthesize these responses.
-4. Iterate to refine the answer until a specified confidence threshold or maximum iteration count is reached.
+4. Iterate to refine the answer until the confidence threshold or max iterations are reached.
 
 ### Conversation Continuation Usage **(New in v0.3.2)**
 
@@ -99,30 +113,6 @@ llm -m my-consortium "Tell me about Jupiter."
 llm -c --cid 01jscjy50ty4ycsypbq6h4ywhh "What are its major moons?"
 ```
 
-### Other Options
-
-- `-m, --model`: Model to include in the consortium for the `run` command. Use `model:count` for instance counts (default models used by `run`: `claude-3-opus-20240229`, `claude-3-sonnet-20240229`, `gpt-4`, `gemini-pro`).
-- `--arbiter`: The arbiter model (default: `claude-3-opus-20240229`).
-- `--confidence-threshold`: Minimum required confidence (default: `0.8`).
-- `--max-iterations`: Maximum rounds of iterations (default: `3`).
-- `--min-iterations`: Minimum iterations to perform (default: `1`).
-- `--system`: Custom system prompt.
-- `--output`: Save detailed results to a JSON file.
-- `--stdin/--no-stdin`: Append additional input from stdin (default: enabled).
-- `--raw`: Output raw responses from both the arbiter and individual models (default: enabled).
-
-Advanced example using the `run` command:
-```bash
-llm consortium "Your complex query" \
-  -m o3-mini:1 \
-  -m gpt-4o:2 \
-  -m gemini-2:3 \
-  --arbiter gemini-2 \
-  --confidence-threshold 1 \
-  --max-iterations 4 \
-  --min-iterations 3 \
-  --output results.json
-```
 
 ### Managing Consortium Configurations
 
@@ -146,6 +136,39 @@ llm -m my-consortium "What are the key considerations for AGI safety?"
 ```
 And continue conversations using `-c` or `--cid` as shown above.
 
+#### Listing Available Strategies
+```bash
+llm consortium strategies
+```
+
+#### Semantic Strategy Example
+```bash
+llm consortium save test-semantic \
+    -m gpt-4:2 \
+    -m claude-3:2 \
+    --arbiter gpt-4 \
+    --strategy semantic \
+    --embedding-backend chutes \
+    --embedding-model qwen3-embedding-8b \
+    --clustering-algorithm dbscan \
+    --cluster-eps 0.35 \
+    --cluster-min-samples 2
+```
+
+The semantic strategy stores per-response embeddings, consensus-cluster metadata, and arbiter-side geometric confidence in the consortium SQLite database.
+
+#### Visualizing a Run
+```bash
+llm consortium visualize-run <run-id> output.html
+```
+
+This exports a Plotly HTML view of the saved embedding projection and also caches the visualization JSON on the run record.
+
+#### Notes on Strategy Behavior
+- Repeating `--strategy-param key=value` now accumulates repeated keys into lists, which is required for role definitions such as repeated `roles=...` entries.
+- `strategy=elimination` automatically normalizes `judging_method` to `rank`, since the elimination strategy depends on arbiter ranking output.
+- Geometric confidence measures response-shape agreement, not factual correctness. High geometric confidence means the surviving responses are close in embedding space; it does not prove the answer is true.
+
 ## Programmatic Usage
 
 Use the `create_consortium` helper to configure an orchestrator in your Python code. For example:
@@ -157,9 +180,8 @@ orchestrator = create_consortium(
     models=["o3-mini:1", "gpt-4o:2", "gemini-2:3"],
     confidence_threshold=1,
     max_iterations=4,
-    min_iterations=3,
+    minimum_iterations=3,
     arbiter="gemini-2",
-    raw=True
 )
 
 result = orchestrator.orchestrate("Your prompt here")

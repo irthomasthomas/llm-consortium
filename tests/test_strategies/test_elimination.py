@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import Mock, MagicMock
 from llm_consortium.strategies.elimination import EliminationStrategy
 from llm_consortium import IterationContext
+from llm_consortium.models import ConsortiumConfig
 
 
 class TestEliminationStrategy:
@@ -18,6 +19,16 @@ class TestEliminationStrategy:
         assert strategy.eliminate_fraction == 0.0
         assert strategy.keep_minimum == 2
         assert strategy.elimination_delay == 1
+
+    def test_config_forces_rank_judging_for_elimination(self):
+        config = ConsortiumConfig(
+            models={"gpt-4": 1, "claude": 1},
+            arbiter="arbiter",
+            strategy="elimination",
+            judging_method="default",
+        )
+
+        assert config.judging_method == "rank"
     
     def test_init_with_custom_params(self):
         """Test initialization with custom parameters."""

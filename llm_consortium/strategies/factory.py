@@ -1,5 +1,9 @@
 from .base import ConsortiumStrategy
 from .default import DefaultStrategy
+from .elimination import EliminationStrategy
+from .role import RoleStrategy
+from .semantic import SemanticClusteringStrategy
+from .voting import VotingStrategy
 # Import other specific strategy classes here when they are implemented
 # e.g., from .round_robin import RoundRobinStrategy
 # e.g., from .counterfactual_regret import CounterfactualRegretStrategy
@@ -18,11 +22,30 @@ if TYPE_CHECKING:
 # Allows dynamic registration or discovery if needed later.
 _strategy_registry: Dict[str, Type[ConsortiumStrategy]] = {
     "default": DefaultStrategy,
-    # Add other built-in strategies here:
-    # "round_robin": RoundRobinStrategy,
-    # "counterfactual_regret": CounterfactualRegretStrategy,
-    # "deep_bloom": DeepBloomStrategy,
+    "elimination": EliminationStrategy,
+    "role": RoleStrategy,
+    "semantic": SemanticClusteringStrategy,
+    "voting": VotingStrategy,
 }
+
+_strategy_descriptions: Dict[str, str] = {
+    "default": "Run all configured members and synthesize their responses.",
+    "elimination": "Use arbiter ranking to remove weaker models across iterations.",
+    "role": "Assign distinct cognitive roles or personalities to member instances.",
+    "semantic": "Cluster response embeddings and keep the densest semantic consensus region.",
+    "voting": "Group similar answers and prefer the consensus cluster.",
+}
+
+
+def list_available_strategies() -> Dict[str, Dict[str, str]]:
+    """Return discoverable built-in strategies with human-readable descriptions."""
+    return {
+        name: {
+            "class_name": strategy_class.__name__,
+            "description": _strategy_descriptions.get(name, "No description available."),
+        }
+        for name, strategy_class in sorted(_strategy_registry.items())
+    }
 
 # --- Future: Mechanism to Register Custom Strategies ---
 # def register_strategy(name: str, strategy_class: Type[ConsortiumStrategy]):
@@ -114,10 +137,3 @@ def create_strategy(strategy_name: Optional[str], orchestrator: 'ConsortiumOrche
         logger.error(f"Unknown strategy requested: '{normalized_name}'. Available: {list(_strategy_registry.keys())}")
         raise ValueError(f"Unknown strategy: '{normalized_name}'")
 
-# Register elimination strategy
-from .elimination import EliminationStrategy
-_strategy_registry["elimination"] = EliminationStrategy
-
-# Register voting strategy
-from .voting import VotingStrategy
-_strategy_registry["voting"] = VotingStrategy

@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import re
 import uuid
 import pathlib
@@ -12,8 +13,11 @@ from .db import (
     log_response,
     save_consortium_run,
     save_consortium_member,
-    save_arbiter_decision
+    save_arbiter_decision,
+    update_consortium_run,
 )
+from .embeddings.service import EmbeddingService, create_embedding_service
+from .geometry import GeometricConfidenceCalculator
 from .models import ConsortiumConfig, resolve_alias_options
 
 logger = logging.getLogger(__name__)
@@ -57,6 +61,12 @@ class ConsortiumOrchestrator:
         self.iteration_history = []
         self._conversation_history = ""
         self.consortium_id = None
+        self._embedding_service: Optional[EmbeddingService] = None
+
+    def get_embedding_service(self) -> EmbeddingService:
+        if self._embedding_service is None:
+            self._embedding_service = create_embedding_service(self.config)
+        return self._embedding_service
 
     def orchestrate(self, prompt: str, conversation_history: Optional[str] = None, consortium_id: Optional[str] = None) -> Dict[str, Any]:
         """Main entry point for orchestration - chooses method based on config."""
@@ -128,6 +138,12 @@ class ConsortiumOrchestrator:
             },
             "original_prompt": prompt
         }
+
+        update_consortium_run(
+            run_id=str(consortium_id),
+            iteration_count=len(self.iteration_history),
+            final_confidence=float(synthesis_dict.get("confidence", 0.0) or 0.0),
+        )
         
         return final_result
 
@@ -193,7 +209,8 @@ class ConsortiumOrchestrator:
                 "instance": instance,
                 "response": text,
                 "confidence": confidence,
-                "id": uuid.uuid4().int % 1000000
+                "id": uuid.uuid4().int % 1000000,
+                "response_id": str(getattr(response, 'id', uuid.uuid4())),
             }
             
             if hasattr(response, 'id') and self.consortium_id:
@@ -284,6 +301,12 @@ class ConsortiumOrchestrator:
             },
             "original_prompt": prompt
         }
+
+        update_consortium_run(
+            run_id=str(consortium_id),
+            iteration_count=len(self.iteration_history),
+            final_confidence=float(synthesis_dict.get("confidence", 0.0) or 0.0),
+        )
         
         return final_result
 
@@ -336,7 +359,8 @@ class ConsortiumOrchestrator:
                 "instance": task["instance"],
                 "response": text,
                 "confidence": 0.5,
-                "id": rid
+                "id": rid,
+                "response_id": str(getattr(response, 'id', rid)),
             }
             
             if hasattr(response, 'id') and self.consortium_id:
@@ -358,7 +382,9 @@ class ConsortiumOrchestrator:
                  "dissent": "",
                  "needs_iteration": False,
                  "refinement_areas": [],
-                 "ranking": [r.get("id") for r in responses]
+                  "ranking": [r.get("id") for r in responses],
+                  "geometric_confidence": 0.0,
+                  "centroid_vector": None,
              }
 
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history)
@@ -382,10 +408,19 @@ class ConsortiumOrchestrator:
             else:
                 parsed_result = self._parse_arbiter_response(raw_arbiter_text, responses=responses)
             
+            parsed_result = self._enrich_with_geometry(parsed_result, responses)
             parsed_result['raw_arbiter_response'] = raw_arbiter_text
             
             if hasattr(response, 'id') and self.consortium_id:
-                save_arbiter_decision(str(self.consortium_id), iteration, str(response.id), parsed_result, self.judging_method)
+                save_arbiter_decision(
+                    str(self.consortium_id),
+                    iteration,
+                    str(response.id),
+                    parsed_result,
+                    self.judging_method,
+                    geometric_confidence=parsed_result.get('geometric_confidence'),
+                    centroid_vector=parsed_result.get('centroid_vector'),
+                )
             
             return parsed_result
         except Exception as e:
@@ -397,6 +432,8 @@ class ConsortiumOrchestrator:
                 "dissent": "",
                 "needs_iteration": False,
                 "refinement_areas": [],
+                "geometric_confidence": 0.0,
+                "centroid_vector": None,
                 "raw_arbiter_response": raw_arbiter_text
             }
 
@@ -408,7 +445,9 @@ class ConsortiumOrchestrator:
                  "confidence": 1.0,
                  "analysis": "No arbiter defined",
                  "needs_iteration": False,
-                 "ranking": [r.get("id") for r in valid_responses]
+                  "ranking": [r.get("id") for r in valid_responses],
+                  "geometric_confidence": 0.0,
+                  "centroid_vector": None,
              }
 
         arbiter_model = llm.get_model(self.arbiter)
@@ -434,10 +473,19 @@ class ConsortiumOrchestrator:
             else:
                 parsed_result = self._parse_arbiter_response(raw_arbiter_text, responses=valid_responses)
             
+            parsed_result = self._enrich_with_geometry(parsed_result, valid_responses)
             parsed_result['raw_arbiter_response'] = raw_arbiter_text
             
             if hasattr(arbiter_response, 'id') and self.consortium_id:
-                save_arbiter_decision(str(self.consortium_id), iteration, str(arbiter_response.id), parsed_result, self.judging_method)
+                save_arbiter_decision(
+                    str(self.consortium_id),
+                    iteration,
+                    str(arbiter_response.id),
+                    parsed_result,
+                    self.judging_method,
+                    geometric_confidence=parsed_result.get('geometric_confidence'),
+                    centroid_vector=parsed_result.get('centroid_vector'),
+                )
             
             return parsed_result
         except Exception as e:
@@ -449,8 +497,23 @@ class ConsortiumOrchestrator:
                 "dissent": "",
                 "needs_iteration": False,
                 "refinement_areas": [],
+                "geometric_confidence": 0.0,
+                "centroid_vector": None,
                 "raw_arbiter_response": raw_arbiter_text
             }
+
+    def _enrich_with_geometry(self, parsed_result: Dict[str, Any], responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        embeddings = [response.get("embedding") for response in responses if response.get("embedding") is not None]
+        if not embeddings:
+            parsed_result.setdefault("geometric_confidence", 0.0)
+            parsed_result.setdefault("centroid_vector", None)
+            return parsed_result
+
+        confidence, centroid = GeometricConfidenceCalculator.compute(embeddings)
+        parsed_result["geometric_confidence"] = confidence
+        parsed_result["centroid_vector"] = centroid.tolist()
+        parsed_result["outlier_indices"] = GeometricConfidenceCalculator.detect_outliers(embeddings)
+        return parsed_result
 
     def _prepare_arbiter_prompt(self, prompt: str, responses: List[Dict[str, Any]], 
                                history: List[Dict[str, Any]]) -> str:

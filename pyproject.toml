@@ -1,6 +1,6 @@
 [project]
 name = "llm-consortium"
-version = "0.7.1"
+version = "0.8.0"
 description = "LLM plugin implementing Andrej Karpathy's model consortium tweet"
 readme = "README.md"
 authors = [{name = "Thomas Hughes", email = "irthomasthomas@gmail.com"}]
@@ -13,7 +13,27 @@ dependencies = [
     "click",
     "httpx",
     "sqlite-utils",
-    "asyncio"
+    "asyncio",
+    "numpy",
+    "colorama",
+    "python-json-logger"
+]
+
+[project.optional-dependencies]
+embeddings = [
+    "scikit-learn",
+    "hdbscan",
+    "openai",
+    "sentence-transformers"
+]
+visualize = [
+    "plotly"
+]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "black",
+    "flake8"
 ]
 
 [project.urls]
@@ -28,12 +48,15 @@ llm_consortium = "llm_consortium"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.setuptools]
-packages = ["llm_consortium", "llm_consortium.strategies"]
+packages = ["llm_consortium", "llm_consortium.embeddings", "llm_consortium.strategies"]
 
 [tool.setuptools.package-data]
 llm_consortium = [
     "system_prompt.xml",
     "arbiter_prompt.xml",
     "iteration_prompt.xml",
-    "rank_prompt.xml"
+    "rank_prompt.xml",
+    "auto_arbiter_lean.xml",
+    "auto_arbiter_pick_lean.xml",
+    "auto_arbiter_rank_lean.xml"
 ]

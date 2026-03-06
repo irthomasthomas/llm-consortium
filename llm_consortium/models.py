@@ -9,6 +9,11 @@ from .db import DatabaseConnection
 
 logger = logging.getLogger(__name__)
 
+
+def _normalize_mode_name(value: Optional[str], default: str) -> str:
+    normalized = (value or default).strip().lower()
+    return normalized or default
+
 def resolve_alias_options(model_id: str) -> Optional[Dict[str, Any]]:
     """Fallback for llm.resolve_alias_options which was removed in newer llm versions.
     Currently returns None to gracefully ignore alias options if unavailable.
@@ -25,7 +30,25 @@ class ConsortiumConfig(BaseModel):
     judging_method: str = "default"
     strategy: Optional[str] = None
     strategy_params: Optional[Dict[str, Any]] = None
+    embedding_backend: Optional[str] = None
+    embedding_model: Optional[str] = None
+    embedding_cache_enabled: bool = True
     manual_context: bool = Field(default=False, description="Use manual context management instead of automatic conversation objects")
+
+    def model_post_init(self, __context: Any) -> None:
+        self.strategy = _normalize_mode_name(self.strategy, "default")
+        self.judging_method = _normalize_mode_name(self.judging_method, "default")
+        if self.embedding_backend is not None:
+            self.embedding_backend = self.embedding_backend.strip().lower() or None
+        if self.embedding_model is not None:
+            self.embedding_model = self.embedding_model.strip() or None
+
+        if self.strategy == "elimination" and self.judging_method != "rank":
+            logger.warning(
+                "Elimination strategy requires rank judging; overriding judging_method=%r to 'rank'.",
+                self.judging_method,
+            )
+            self.judging_method = "rank"
 
     def to_dict(self):
         return self.model_dump()

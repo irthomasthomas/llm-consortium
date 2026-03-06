@@ -1,6 +1,7 @@
 import unittest
 from unittest.mock import patch, MagicMock, call
 import uuid
+import numpy as np
 from llm_consortium import (
     ConsortiumOrchestrator, 
     DatabaseConnection, 
@@ -82,6 +83,38 @@ class TestConsortiumOrchestrator(unittest.TestCase):
         self.assertEqual(result["confidence"], 0.85)
         self.assertEqual(result["analysis"], "Analysis of responses")
         self.assertFalse(result["needs_iteration"])
+        self.assertIn("geometric_confidence", result)
+
+    @patch('llm_consortium.orchestrator.llm.get_model')
+    @patch('llm_consortium.orchestrator.log_response')
+    @patch('llm_consortium.orchestrator.save_consortium_member')
+    @patch('llm_consortium.orchestrator.save_arbiter_decision')
+    def test_synthesize_responses_persists_geometric_confidence(self, mock_save_decision, mock_save_member, mock_log_response, mock_get_model):
+        mock_arbiter = MagicMock()
+        mock_response = MagicMock()
+        mock_response.id = "arbiter-response-1"
+        mock_response.text.return_value = """
+        <synthesis_output>
+            <synthesis>Synthesized response</synthesis>
+            <confidence>0.85</confidence>
+            <analysis>Analysis of responses</analysis>
+            <needs_iteration>false</needs_iteration>
+        </synthesis_output>
+        """
+        mock_arbiter.prompt.return_value = mock_response
+        mock_get_model.return_value = mock_arbiter
+        self.orchestrator.consortium_id = "run-geometry"
+
+        responses = [
+            {"model": "model1", "response": "Response 1", "confidence": 0.7, "id": 1, "embedding": np.array([1.0, 0.0])},
+            {"model": "model2", "response": "Response 2", "confidence": 0.8, "id": 2, "embedding": np.array([0.9, 0.1])}
+        ]
+
+        self.orchestrator._synthesize_responses_manual("Original prompt", responses, [], 1)
+
+        kwargs = mock_save_decision.call_args.kwargs
+        self.assertGreater(kwargs["geometric_confidence"], 0.0)
+        self.assertEqual(len(kwargs["centroid_vector"]), 2)
 
     @patch.object(ConsortiumOrchestrator, '_get_model_responses_manual')
     @patch.object(ConsortiumOrchestrator, '_synthesize_responses_manual')

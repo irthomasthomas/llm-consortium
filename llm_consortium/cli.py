@@ -5,9 +5,33 @@ import pathlib
 import llm
 
 from .db import DatabaseConnection
+from .visualization import generate_run_visualization
 from .models import ConsortiumConfig, parse_models, _save_consortium_config, _get_consortium_configs
+from .strategies.factory import list_available_strategies
 
 logger = logging.getLogger(__name__)
+
+
+def _parse_strategy_params(strategy_params_list):
+    strategy_params = {}
+    for param in strategy_params_list:
+        if '=' in param:
+            key, value = param.split('=', 1)
+            key = key.strip()
+            value = value.strip()
+
+            if key in strategy_params:
+                existing_value = strategy_params[key]
+                if isinstance(existing_value, list):
+                    existing_value.append(value)
+                else:
+                    strategy_params[key] = [existing_value, value]
+            else:
+                strategy_params[key] = value
+        else:
+            strategy_params[param.strip()] = True
+
+    return strategy_params
 
 @llm.hookimpl
 def register_commands(cli):
@@ -77,23 +101,51 @@ def register_commands(cli):
         default="default"
     )
     @click.option(
+        "--embedding-backend",
+        type=click.Choice(["openai", "sentence-transformers", "chutes"], case_sensitive=False),
+        default=None,
+        help="Embedding backend (openai, sentence-transformers, chutes)."
+    )
+    @click.option(
+        "--embedding-model",
+        default=None,
+        help="Specific embedding model name."
+    )
+    @click.option(
+        "--clustering-algorithm",
+        type=click.Choice(["dbscan", "hdbscan", "tropical"], case_sensitive=False),
+        default=None,
+        help="Semantic clustering algorithm to use."
+    )
+    @click.option(
+        "--cluster-eps",
+        type=float,
+        default=0.5,
+        help="DBSCAN epsilon parameter."
+    )
+    @click.option(
+        "--cluster-min-samples",
+        type=int,
+        default=2,
+        help="Minimum points required to form a semantic cluster."
+    )
+    @click.option(
         "--strategy-param", "strategy_params_list",
         multiple=True,
         help="Parameters for the strategy, format KEY=VALUE. Can be provided multiple times.",
     )
     def save_command(name, models, count, arbiter, confidence_threshold, max_iterations,
-                     min_iterations, system_prompt_content, judging_method, manual_context, strategy, strategy_params_list):
+                     min_iterations, system_prompt_content, judging_method, manual_context, strategy,
+                     embedding_backend, embedding_model, clustering_algorithm, cluster_eps, cluster_min_samples,
+                     strategy_params_list):
         """Save a consortium configuration to be used as a model."""
         
         model_dict = parse_models(models, count)
-
-        strategy_params = {}
-        for param in strategy_params_list:
-            if '=' in param:
-                k, v = param.split('=', 1)
-                strategy_params[k.strip()] = v.strip()
-            else:
-                strategy_params[param.strip()] = True
+        strategy_params = _parse_strategy_params(strategy_params_list)
+        if clustering_algorithm:
+            strategy_params["clustering_algorithm"] = clustering_algorithm.lower()
+            strategy_params["eps"] = cluster_eps
+            strategy_params["min_samples"] = cluster_min_samples
 
         if confidence_threshold > 1.0:
              if confidence_threshold <= 100.0:
@@ -113,6 +165,8 @@ def register_commands(cli):
             judging_method=judging_method,
             strategy=strategy,
             strategy_params=strategy_params,
+            embedding_backend=embedding_backend,
+            embedding_model=embedding_model,
             manual_context=manual_context
         )
         try:
@@ -121,6 +175,21 @@ def register_commands(cli):
             click.echo(f"You can now use it like: llm -m {name} \"Your prompt here\"")
         except Exception as e:
              raise click.ClickException(f"Error saving consortium '{name}': {e}")
+
+    @consortium.command(name="strategies")
+    def strategies_command():
+        """List available consortium strategies and what they do."""
+        strategies = list_available_strategies()
+        if not strategies:
+            click.echo("No consortium strategies are registered.")
+            return
+
+        click.echo("Available consortium strategies:\n")
+        for name, metadata in strategies.items():
+            click.echo(f"Name: {name}")
+            click.echo(f"  Class: {metadata['class_name']}")
+            click.echo(f"  Description: {metadata['description']}")
+            click.echo("")
 
 
     @consortium.command(name="list")
@@ -270,10 +339,23 @@ def register_commands(cli):
                     click.echo(f"    {content}")
             
             if iter_decision:
-                click.echo(f"\n  Arbiter Decision (Confidence: {iter_decision.get('confidence')}):")
+                click.echo(f"\n  Arbiter Decision (Confidence: {iter_decision.get('confidence')}, Geometric: {iter_decision.get('geometric_confidence')}):")
                 click.echo(f"    Synthesis: {iter_decision.get('synthesis')}")
                 if iter_decision.get('refinement_areas') and iter_decision.get('refinement_areas') != '[]':
                     click.echo(f"    Refinement: {iter_decision.get('refinement_areas')}")
+
+    @consortium.command(name="visualize-run")
+    @click.argument("run_id")
+    @click.argument("output", required=False, type=click.Path(dir_okay=False, path_type=pathlib.Path))
+    def visualize_run_command(run_id, output):
+        """Export a run embedding visualization to HTML."""
+        figure = generate_run_visualization(run_id)
+        output_path = output or pathlib.Path(f"{run_id}.html")
+        if hasattr(figure, "write_html"):
+            figure.write_html(str(output_path))
+        else:
+            raise click.ClickException("Visualization backend does not support HTML export")
+        click.echo(f"Visualization exported to {output_path}")
 
     @consortium.command(name="list-traces")
     @click.option("--limit", type=int, default=10, help="Maximum number of traces to show")

@@ -5,10 +5,8 @@ orchestrator = create_consortium(
     models=["claude-3-haiku", "gpt-4o", "gemini-pro"],  # 1 instance of each model
     confidence_threshold=0.8,
     max_iterations=3,
-    min_iterations=1,
+    minimum_iterations=1,
     arbiter="claude-3-haiku",
-    show_arbiter=True,  # Show arbiter analysis (can be set to False to hide)
-    raw=True  # Show individual model responses for demonstration
 )
 
 # Run the consortium with a sample prompt

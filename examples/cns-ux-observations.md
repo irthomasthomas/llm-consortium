@@ -21,15 +21,16 @@ Notes from creating 30+ consortium configurations across all strategies and mode
 ### 3. `--strategy-param` with `roles` is awkward on CLI
 **Severity**: High (usability)  
 **Where**: CLI `save` command  
+**Status**: Fixed for repeated keys; still ergonomically awkward.  
 **Issue**: Roles are lists of strings, but `--strategy-param` only supports `KEY=VALUE` format. To pass multiple roles you must repeat `--strategy-param "roles=The Security Auditor: ..."` multiple times. But looking at the parsing code:
 ```python
 if '=' in param:
     k, v = param.split('=', 1)
     strategy_params[k.strip()] = v.strip()
 ```
-This means each `roles=...` **overwrites** the previous one. Only the last role is saved!  
-**Impact**: Role strategy via CLI is broken for custom roles unless the code handles list accumulation.  
-**Fix needed**: Detect repeated keys and accumulate into a list, or use a syntax like `--strategy-param "roles=[role1, role2, ...]"`.
+This used to mean each `roles=...` **overwrote** the previous one. Repeated keys now accumulate into a list, so repeated `roles=...` entries are preserved.  
+**Remaining issue**: The syntax still feels clumsy for long role definitions.  
+**Possible follow-up**: Add JSON/YAML-style list parsing or a dedicated `--role` option.
 
 ### 4. `eliminate_fraction` vs `eliminate_count` — no mutual exclusivity
 **Severity**: Low  
@@ -39,8 +40,9 @@ This means each `roles=...` **overwrites** the previous one. Only the last role 
 ### 5. No way to list available strategies from CLI
 **Severity**: Medium  
 **Where**: CLI  
+**Status**: Fixed.  
 **Issue**: `--strategy` accepts any string. There's no `--help` hint showing valid strategies and no `llm consortium strategies` subcommand. A typo like `--strategy votting` fails silently at runtime.  
-**Suggestion**: Add `llm consortium strategies` to list available strategies with descriptions.
+**Implemented**: `llm consortium strategies` now lists built-in strategies with descriptions.
 
 ### 6. No dry-run or validation mode
 **Severity**: Medium  
@@ -63,8 +65,16 @@ This means each `roles=...` **overwrites** the previous one. Only the last role 
 ### 9. `judging_method=rank` is required for elimination but not enforced
 **Severity**: Medium  
 **Where**: Elimination strategy  
+**Status**: Fixed.  
 **Issue**: Elimination strategy needs ranking data to decide which models to eliminate. If you use `judging_method=default`, the elimination strategy may not have ranking data and could fail silently or eliminate randomly.  
-**Suggestion**: Auto-set or validate `judging_method=rank` when `strategy=elimination`.
+**Implemented**: The config layer now normalizes elimination strategy runs to `judging_method=rank` automatically.
+
+### 15. Semantic strategy quality still needs real-provider evaluation
+**Severity**: Medium  
+**Where**: Validation / merge readiness  
+**Issue**: The semantic embedding path now executes end-to-end, persists embeddings and geometric confidence, and exports visualization output. However, real provider-backed answer-quality improvement versus baseline has not been established yet.  
+**What was validated**: local full pytest pass, live Chutes embedding smoke test, deterministic end-to-end semantic filtering and persistence validation.  
+**Next step**: Run paired baseline vs semantic consortium prompts against real external providers and compare convergence behavior and answer quality.
 
 ### 10. No way to export/import configurations
 **Severity**: Medium  

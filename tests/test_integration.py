@@ -97,6 +97,8 @@ def test_full_orchestration_cycle(mock_get_model, isolated_db):
     assert len(runs) == 1
     run_id = runs[0]["id"]
     assert runs[0]["user_prompt"] == "Is the earth round?"
+    assert runs[0]["iteration_count"] == 1
+    assert runs[0]["final_confidence"] == 0.95
     
     # Check members table
     members = list(db["consortium_members"].rows)

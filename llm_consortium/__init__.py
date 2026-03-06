@@ -87,4 +87,4 @@ __all__ = [
     'user_dir', 'IterationContext'
 ]
 
-__version__ = "0.7.1"
+__version__ = "0.8.0"

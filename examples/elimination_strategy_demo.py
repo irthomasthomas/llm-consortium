@@ -1,6 +1,5 @@
 """Demonstration of the EliminationStrategy in action."""
 
-import asyncio
 import logging
 from llm_consortium import create_consortium
 
@@ -8,7 +7,7 @@ from llm_consortium import create_consortium
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-async def demo_elimination_strategy():
+def demo_elimination_strategy():
     """Demonstrate the elimination strategy with synthetic models."""
     
     # Create a consortium with elimination strategy
@@ -77,4 +76,4 @@ async def demo_elimination_strategy():
 
 if __name__ == "__main__":
     # Run the demo
-    result = asyncio.run(demo_elimination_strategy())
+    result = demo_elimination_strategy()

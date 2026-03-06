@@ -7,6 +7,7 @@ import json
 import sqlite3
 import pathlib
 import click
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +155,22 @@ def save_consortium_run(
     except Exception as e:
         logger.error(f"Error persisting consortium_run: {e}")
 
+
+def update_consortium_run(
+    run_id: str,
+    iteration_count: int,
+    final_confidence: float,
+) -> None:
+    try:
+        db = DatabaseConnection.get_connection()
+        db.conn.execute(
+            "UPDATE consortium_runs SET iteration_count = ?, final_confidence = ? WHERE id = ?",
+            [iteration_count, final_confidence, run_id],
+        )
+        db.conn.commit()
+    except Exception as e:
+        logger.error(f"Error updating consortium_run summary: {e}")
+
 def save_consortium_member(
     run_id: str,
     response_id: str,
@@ -179,7 +196,9 @@ def save_arbiter_decision(
     iteration: int,
     response_id: str,
     parsed_result: Dict[str, Any],
-    judging_method: str
+    judging_method: str,
+    geometric_confidence: Optional[float] = None,
+    centroid_vector: Optional[List[float]] = None,
 ):
     try:
         db = DatabaseConnection.get_connection()
@@ -193,8 +212,113 @@ def save_arbiter_decision(
             "synthesis": parsed_result.get('synthesis', ''),
             "decision_json": json.dumps(parsed_result) if judging_method != 'rank' else None,
             "ranking_json": json.dumps(parsed_result.get('ranking', [])) if judging_method == 'rank' else None,
-            "refinement_areas": json.dumps(parsed_result.get('refinement_areas', []))
-        }, ignore=True)
+            "refinement_areas": json.dumps(parsed_result.get('refinement_areas', [])),
+            "geometric_confidence": geometric_confidence,
+            "centroid_vector": json.dumps(centroid_vector) if centroid_vector is not None else None,
+        }, ignore=True, alter=True)
         db.conn.commit()
     except Exception as e:
         logger.error(f"Error logging arbiter decision: {e}")
+
+
+def save_response_embedding(
+    response_id: str,
+    run_id: str,
+    vector: List[float],
+    model: str,
+    embedding_model: Optional[str] = None,
+) -> None:
+    try:
+        db = DatabaseConnection.get_connection()
+        db["response_embeddings"].insert({
+            "response_id": response_id,
+            "run_id": run_id,
+            "model": model,
+            "embedding_json": json.dumps(vector),
+            "embedding_model": embedding_model,
+            "created_at": datetime.datetime.utcnow().isoformat(),
+        }, pk="response_id", replace=True, alter=True)
+        db.conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving response embedding: {e}")
+
+
+def get_embeddings_for_run(run_id: str) -> List[np.ndarray]:
+    db = DatabaseConnection.get_connection()
+    if "response_embeddings" not in db.table_names():
+        return []
+
+    rows = list(db.query(
+        "SELECT embedding_json FROM response_embeddings WHERE run_id = ? ORDER BY created_at, response_id",
+        [run_id],
+    ))
+    return [np.array(json.loads(row["embedding_json"]), dtype=float) for row in rows]
+
+
+def get_embedding_records_for_run(run_id: str) -> List[Dict[str, Any]]:
+    db = DatabaseConnection.get_connection()
+    if "response_embeddings" not in db.table_names():
+        return []
+
+    geometric_confidence_select = "NULL AS geometric_confidence"
+    if "arbiter_decisions" in db.table_names():
+        arbiter_columns = {column.name for column in db["arbiter_decisions"].columns}
+        if "geometric_confidence" in arbiter_columns:
+            geometric_confidence_select = "ad.geometric_confidence"
+
+    return [
+        dict(row)
+        for row in db.query(
+            "SELECT re.response_id, re.run_id, re.model, re.embedding_json, re.embedding_model, re.created_at, "
+            f"cm.iteration, cm.member_index, {geometric_confidence_select} "
+            "FROM response_embeddings re "
+            "LEFT JOIN consortium_members cm ON cm.response_id = re.response_id AND cm.run_id = re.run_id "
+            "LEFT JOIN arbiter_decisions ad ON ad.run_id = re.run_id AND ad.iteration = cm.iteration "
+            "WHERE re.run_id = ? ORDER BY cm.iteration, cm.member_index, re.response_id",
+            [run_id],
+        )
+    ]
+
+
+def save_cluster_metadata(run_id: str, iteration: int, clusters: List[Dict[str, Any]]) -> None:
+    try:
+        db = DatabaseConnection.get_connection()
+        for cluster in clusters:
+            db["consensus_clusters"].insert({
+                "run_id": run_id,
+                "iteration": iteration,
+                "cluster_id": cluster.get("cluster_id", -1),
+                "centroid_json": json.dumps(cluster.get("centroid", [])),
+                "radius": cluster.get("radius", 0.0),
+                "density": cluster.get("density", 0.0),
+            }, alter=True)
+        db.conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving cluster metadata: {e}")
+
+
+def save_run_visualization(run_id: str, visualization_json: str) -> None:
+    try:
+        db = DatabaseConnection.get_connection()
+        run_columns = {column.name for column in db["consortium_runs"].columns}
+        if "visualization_json" not in run_columns:
+            db["consortium_runs"].add_column("visualization_json", str)
+
+        existing = db.conn.execute(
+            "SELECT 1 FROM consortium_runs WHERE id = ?",
+            [run_id],
+        ).fetchone()
+        if existing:
+            db.conn.execute(
+                "UPDATE consortium_runs SET visualization_json = ? WHERE id = ?",
+                [visualization_json, run_id],
+            )
+        else:
+            db["consortium_runs"].insert({
+                "id": run_id,
+                "created_at": datetime.datetime.utcnow().isoformat(),
+                "visualization_json": visualization_json,
+            }, pk="id", alter=True)
+        db.conn.commit()
+    except Exception as e:
+        logger.error(f"Error saving run visualization: {e}")

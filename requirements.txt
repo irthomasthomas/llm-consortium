@@ -1,6 +1,10 @@
-fastapi
-uvicorn
-pydantic
+llm
+click
+httpx
+sqlite-utils
+asyncio
+numpy
 colorama
-python-json-logger>=2.0.0
-python-json-logger>=2.0.0
+python-json-logger
+pydantic
+# Extras [embeddings,visualize,dev] can be installed via pyproject.toml
