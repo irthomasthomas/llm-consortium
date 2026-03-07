@@ -26,14 +26,14 @@ Release 2025.02.23
 
 Release 2026.03.06 (Version 0.8.0)
 - Semantic embedding and geometric consensus work:
-  - Added embedding backend abstraction with OpenAI, sentence-transformers, deterministic fallback embeddings, and Chutes `qwen3-embedding-8b` support.
+  - Added embedding backend abstraction with strict interfaces for OpenAI, sentence-transformers, and Chutes `qwen3-embedding-8b` support (fails loudly on backend errors).
   - Added `SemanticClusteringStrategy` with DBSCAN, HDBSCAN fallback handling, and tropical centroid support.
-  - Integrated geometric confidence and centroid persistence into arbiter synthesis.
-  - Added persistence for response embeddings, consensus clusters, centroid vectors, geometric confidence, and cached visualization JSON.
-  - Added Plotly/t-SNE run visualization export via `llm consortium visualize-run`.
+  - Added persistence for response embeddings, consensus clusters, centroid vectors, and geometric confidence.
+  - Demoted geometric confidence to observational telemetry (recorded in `arbiter_decisions` but not used for arbitration routing).
   - Added CLI/config support for `--embedding-backend`, `--embedding-model`, `--clustering-algorithm`, `--cluster-eps`, and `--cluster-min-samples`.
+  - Removed unstable embedding visualizations and dummy fallback mechanisms following architectural review (see `NOTES-semantic-filtering.md`).
   - Added `llm consortium strategies` and fixed repeated `--strategy-param` accumulation for list-style parameters such as repeated role definitions.
   - Enforced `judging_method=rank` when `strategy=elimination`.
   - Fixed run summary persistence so `iteration_count` and `final_confidence` are updated after orchestration.
-  - Fixed visualization persistence so exporting a run does not overwrite existing consortium run metadata.
-  - Validation status: full test suite passing locally; live Chutes embedding smoke test successful; real provider-backed answer-quality comparison still pending.
+  - Validation status: full test suite passing locally; live Chutes embedding smoke test successful; real provider-backed answer-quality demonstration pending further evaluation.
+
