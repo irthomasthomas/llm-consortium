@@ -113,7 +113,7 @@ def test_embedding_service_caches_by_text_hash():
     assert hashlib.sha256("repeat".encode("utf-8")).hexdigest() in service._cache
 
 
-def test_embedding_service_gracefully_degrades_on_failure():
+def test_embedding_service_hard_fails_on_failure():
     class FailingBackend(BaseEmbeddingBackend):
         def embed(self, text: str) -> np.ndarray:
             raise RuntimeError("boom")
@@ -122,8 +122,5 @@ def test_embedding_service_gracefully_degrades_on_failure():
             return 4
 
     service = EmbeddingService(backend=FailingBackend(), cache_enabled=False)
-    vector = service.embed("fallback")
-
-    assert isinstance(vector, np.ndarray)
-    assert vector.shape == (4,)
-    assert np.linalg.norm(vector) > 0.0
+    with pytest.raises(RuntimeError):
+        service.embed("fallback")

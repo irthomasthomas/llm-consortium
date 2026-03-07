@@ -11,25 +11,6 @@ from .backends import BaseEmbeddingBackend, ChutesBackend, OpenAIBackend, Senten
 logger = logging.getLogger(__name__)
 
 
-class DummyEmbeddingBackend(BaseEmbeddingBackend):
-    def __init__(self, dimension: int = 384):
-        self._dimension = dimension
-
-    def embed(self, text: str) -> np.ndarray:
-        return _deterministic_dummy_embedding(text, self._dimension)
-
-    def dimension(self) -> int:
-        return self._dimension
-
-
-def _deterministic_dummy_embedding(text: str, dimension: int) -> np.ndarray:
-    digest = hashlib.sha256(text.encode("utf-8")).digest()
-    values = [(digest[index % len(digest)] / 255.0) for index in range(dimension)]
-    vector = np.array(values, dtype=float)
-    norm = np.linalg.norm(vector)
-    return vector if norm == 0 else vector / norm
-
-
 class EmbeddingService:
     def __init__(self, backend: BaseEmbeddingBackend, cache_enabled: bool = True, cache_size: int = 256):
         self.backend = backend
@@ -53,8 +34,8 @@ class EmbeddingService:
         try:
             vector = self.backend.embed(text)
         except Exception as exc:
-            logger.warning("Embedding backend failed for text hash %s: %s", cache_key, exc)
-            vector = _deterministic_dummy_embedding(text, self.backend.dimension())
+            logger.error("Embedding backend failed for text hash %s: %s", cache_key, exc)
+            raise RuntimeError(f"Embedding backend {self.backend.__class__.__name__} failed") from exc
 
         if self.cache_enabled:
             with self._lock:
@@ -80,6 +61,6 @@ def create_embedding_service(config) -> EmbeddingService:
     elif backend_name == "chutes":
         backend = ChutesBackend(model=model_name)
     else:
-        backend = DummyEmbeddingBackend()
+        raise ValueError(f"No valid embedding_backend configured. Found: {backend_name}")
 
     return EmbeddingService(backend=backend, cache_enabled=cache_enabled)

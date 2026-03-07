@@ -5,7 +5,6 @@ import pathlib
 import llm
 
 from .db import DatabaseConnection
-from .visualization import generate_run_visualization
 from .models import ConsortiumConfig, parse_models, _save_consortium_config, _get_consortium_configs
 from .strategies.factory import list_available_strategies
 
@@ -343,19 +342,6 @@ def register_commands(cli):
                 click.echo(f"    Synthesis: {iter_decision.get('synthesis')}")
                 if iter_decision.get('refinement_areas') and iter_decision.get('refinement_areas') != '[]':
                     click.echo(f"    Refinement: {iter_decision.get('refinement_areas')}")
-
-    @consortium.command(name="visualize-run")
-    @click.argument("run_id")
-    @click.argument("output", required=False, type=click.Path(dir_okay=False, path_type=pathlib.Path))
-    def visualize_run_command(run_id, output):
-        """Export a run embedding visualization to HTML."""
-        figure = generate_run_visualization(run_id)
-        output_path = output or pathlib.Path(f"{run_id}.html")
-        if hasattr(figure, "write_html"):
-            figure.write_html(str(output_path))
-        else:
-            raise click.ClickException("Visualization backend does not support HTML export")
-        click.echo(f"Visualization exported to {output_path}")
 
     @consortium.command(name="list-traces")
     @click.option("--limit", type=int, default=10, help="Maximum number of traces to show")
