@@ -1,6 +1,6 @@
 [project]
 name = "llm-consortium"
-version = "0.8.0"
+version = "0.8.1"
 description = "LLM plugin implementing Andrej Karpathy's model consortium tweet"
 readme = "README.md"
 authors = [{name = "Thomas Hughes", email = "irthomasthomas@gmail.com"}]
