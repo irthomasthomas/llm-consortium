@@ -33,7 +33,7 @@ flowchart TD
 - **Embedding Visualization**: Project saved run embeddings and export HTML visualizations.
 - **Configurable Parameters**: Adjustable confidence thresholds, iteration limits, and model selection.
 - **Flexible Model Instance Counts**: Specify individual instance counts via the syntax `model:count`.
-- **Conversation Continuation**: Continue previous conversations using the `-c` or `--cid` flags, just like with standard `llm` models. **(New in v0.3.2)**
+- **Conversation Continuation**: Continue previous conversations using the `-c` or `--cid` flags, just like with standard `llm` models. **(New in v0.8.0)**
 
 ## New Model Instance Syntax
 
@@ -42,33 +42,6 @@ You can define different numbers of instances per model by appending `:count` to
 - `"gpt-4o:2"` runs 2 instances of _gpt-4o_.
 - `"gemini-2:3"` runs 3 instances of _gemini-2_.
 *(If no count is specified, a default instance count (default: 1) is used.)*
-
-## Installation
-
-First, get [llm](https://github.com/simonw/llm):
-
-Using `uv`:
-```bash
-uv tool install llm
-```
-Using `pipx`:
-```bash
-pipx install llm
-```
-Then install the consortium plugin:
-```bash
-llm install "llm-consortium[embeddings,visualize]"
-# Or to install directly from this repo (requires extras for full features)
-# llm install -e ".[embeddings,visualize,dev]"
-```
-
-For semantic clustering and visualization support, use the `[embeddings]` and `[visualize]` extras. These provide:
-- **embeddings**: `scikit-learn`, `hdbscan`, `openai`, `sentence-transformers`
-- **visualize**: `plotly`
-
-Optional provider-specific bits:
-- `CHUTES_API_TOKEN` for `--embedding-backend chutes`
-- OpenAI credentials for `--embedding-backend openai`
 
 ## Command Line Usage
 
@@ -92,7 +65,7 @@ This sequence will:
 3. Use an arbiter model to synthesize these responses.
 4. Iterate to refine the answer until the confidence threshold or max iterations are reached.
 
-### Conversation Continuation Usage **(New in v0.3.2)**
+### Conversation Continuation Usage **(New in v0.8.0)**
 
 After running an initial prompt with a saved consortium model, you can continue the conversation:
 
@@ -157,12 +130,6 @@ llm consortium save test-semantic \
 
 The semantic strategy stores per-response embeddings, consensus-cluster metadata, and arbiter-side geometric confidence in the consortium SQLite database.
 
-#### Visualizing a Run
-```bash
-llm consortium visualize-run <run-id> output.html
-```
-
-This exports a Plotly HTML view of the saved embedding projection and also caches the visualization JSON on the run record.
 
 #### Notes on Strategy Behavior
 - Repeating `--strategy-param key=value` now accumulates repeated keys into lists, which is required for role definitions such as repeated `roles=...` entries.
@@ -191,7 +158,7 @@ print(f"Synthesized Response: {result['synthesis']['synthesis']}")
 
 ## License
 
-MIT License
+Apache-2.0 License
 
 ## Credits
 
@@ -200,3 +167,172 @@ Developed as part of the LLM ecosystem and inspired by Andrej Karpathy’s insig
 ## Changelog
 
 Please refer to the [CHANGELOG.md](CHANGELOG.md) file for documented history and updates.
+## Installation
+
+### Quick Start (Recommended)
+
+For a complete development setup:
+
+```bash
+git clone https://github.com/irthomasthomas/llm-consortium.git
+cd llm-consortium
+./scripts/setup.sh
+```
+
+Or using `make`:
+
+```bash
+make install-all  # Installs with all extras
+```
+
+### Using `llm` CLI
+
+First install `llm`:
+
+```bash
+uv tool install llm
+```
+
+Then install the consortium plugin:
+
+```bash
+llm install "llm-consortium"
+# Or with all features:
+llm install "llm-consortium[embeddings,visualize]"
+```
+
+### Manual Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/irthomasthomas/llm-consortium.git
+   cd llm-consortium
+   ```
+
+2. Install with pip:
+   ```bash
+   # Basic installation
+   pip install -e .
+   
+   # With all dependencies
+   pip install -e ".[embeddings,visualize,dev]"
+   ```
+
+3. Or use the Makefile targets:
+   ```bash
+   make install          # Basic installation
+   make install-dev      # With development tools
+   make install-all      # With all extras (recommended)
+   ```
+
+### Dependencies
+
+Core dependencies (automatically installed):
+- `llm`: The core LLM plugin framework
+- `click`: CLI framework
+- `httpx`: HTTP client for API calls
+- `sqlite-utils`: Database utilities
+- `asyncio`: Async support
+- `numpy`: Numerical operations
+- `colorama`: Terminal colors
+- `pydantic`: Data validation
+
+Optional extras:
+- **embeddings**: `scikit-learn`, `hdbscan`, `openai`, `sentence-transformers`
+- **visualize**: `plotly`
+- **dev**: `pytest`, `pytest-cov`, `black`, `flake8`
+
+### Provider Setup
+
+For embeddings support:
+- Set `OPENAI_API_KEY` for OpenAI backend
+- Set `CHUTES_API_TOKEN` for Chutes backend
+
+
+## Troubleshooting
+
+### Externally Managed Environment Error (PEP 668)
+
+If you get an error like:
+```
+error: externally-managed-environment
+```
+
+This is because your Python installation is managed by the system (common on Arch Linux, Fedora, etc.). Solutions:
+
+1. **Use the provided quick setup script:**
+   ```bash
+   ./scripts/quick_setup.sh
+   ```
+
+2. **Use a virtual environment manually:**
+   ```bash
+   python -m venv .venv
+   source .venv/bin/activate
+   pip install -e ".[embeddings,visualize,dev]"
+   ```
+
+3. **Use `uv` (recommended on Arch Linux):**
+   ```bash
+   # Install uv if not available
+   pip install --user uv
+   
+   # Create environment and install
+   uv venv
+   source .venv/bin/activate
+   uv pip install -e ".[embeddings,visualize,dev]"
+   ```
+
+4. **Use `pipx` for system-wide installation:**
+   ```bash
+   pipx install -e . --force
+   ```
+
+### Plugin Not Registering
+
+If `llm plugins` doesn't show `llm-consortium`:
+
+1. Install in development mode:
+   ```bash
+   source .venv/bin/activate
+   llm install -e .
+   ```
+
+2. Check the entry point:
+   ```bash
+   python -c "import pkg_resources; print([ep for ep in pkg_resources.iter_entry_points('llm')])"
+   ```
+
+3. Reinstall the plugin:
+   ```bash
+   pip uninstall llm-consortium
+   pip install -e .
+   llm install -e .
+   ```
+
+### Missing Dependencies
+
+If you get import errors:
+
+1. Install all dependencies:
+   ```bash
+   pip install -e ".[embeddings,visualize,dev]"
+   ```
+
+2. Or install just the core:
+   ```bash
+   pip install -e .
+   ```
+
+### Testing the Installation
+
+Run the test script:
+```bash
+./scripts/test_installation.sh
+```
+
+Or manually test:
+```bash
+source .venv/bin/activate
+llm consortium --help
+```

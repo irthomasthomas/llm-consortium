@@ -16,7 +16,7 @@ dependencies = [
     "asyncio",
     "numpy",
     "colorama",
-    "python-json-logger"
+    "pydantic"
 ]
 
 [project.optional-dependencies]
@@ -37,9 +37,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/irthomasthomas/karpathy-consortium"
-Changelog = "https://github.com/irthomasthomas/karpathy-consortium/releases"
-Issues = "https://github.com/irthomasthomas/karpathy-consortium/issues"
+Homepage = "https://github.com/irthomasthomas/llm-consortium"
+Changelog = "https://github.com/irthomasthomas/llm-consortium/releases"
+Issues = "https://github.com/irthomasthomas/llm-consortium/issues"
 
 [project.entry-points.llm]
 llm_consortium = "llm_consortium"

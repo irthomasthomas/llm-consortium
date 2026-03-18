@@ -343,9 +343,3 @@ def register_commands(cli):
                 if iter_decision.get('refinement_areas') and iter_decision.get('refinement_areas') != '[]':
                     click.echo(f"    Refinement: {iter_decision.get('refinement_areas')}")
 
-    @consortium.command(name="list-traces")
-    @click.option("--limit", type=int, default=10, help="Maximum number of traces to show")
-    def list_traces_command(limit):
-        """List recent trace IDs (Delegates to 'runs' internally since traces are now linked to runs)"""
-        click.echo("Traces are now stored contextually within Consortium Runs.")
-        runs_command.callback(limit=limit, since=None)

@@ -1,0 +1,77 @@
+[
+  {
+    "category": "factual",
+    "expected_agreement": 0.9,
+    "prompt": "What is the capital of France?"
+  },
+  {
+    "category": "factual",
+    "expected_agreement": 0.9,
+    "prompt": "Describe the water cycle."
+  },
+  {
+    "category": "factual",
+    "expected_agreement": 0.9,
+    "prompt": "Is the photon massless? Explain."
+  },
+  {
+    "category": "technical",
+    "expected_agreement": 0.6,
+    "prompt": "Compare REST and GraphQL APIs."
+  },
+  {
+    "category": "technical",
+    "expected_agreement": 0.6,
+    "prompt": "Trade-offs between microservices and monoliths."
+  },
+  {
+    "category": "technical",
+    "expected_agreement": 0.6,
+    "prompt": "Explain the Heisenberg uncertainty principle simply."
+  },
+  {
+    "category": "subjective",
+    "expected_agreement": 0.3,
+    "prompt": "Should AI development be regulated?"
+  },
+  {
+    "category": "subjective",
+    "expected_agreement": 0.3,
+    "prompt": "Is Python better than JavaScript?"
+  },
+  {
+    "category": "subjective",
+    "expected_agreement": 0.3,
+    "prompt": "Recommend a book for learning Python."
+  },
+  {
+    "category": "creative",
+    "expected_agreement": 0.2,
+    "prompt": "Write a haiku about debugging."
+  },
+  {
+    "category": "creative",
+    "expected_agreement": 0.2,
+    "prompt": "Write a short poem about changing seasons."
+  },
+  {
+    "category": "creative",
+    "expected_agreement": 0.2,
+    "prompt": "Write a moody poem about rain in a cyberpunk city."
+  },
+  {
+    "category": "speculative",
+    "expected_agreement": 0.2,
+    "prompt": "What is consciousness?"
+  },
+  {
+    "category": "speculative",
+    "expected_agreement": 0.2,
+    "prompt": "What will transportation look like in 2050?"
+  },
+  {
+    "category": "speculative",
+    "expected_agreement": 0.2,
+    "prompt": "If you could redesign the internet, what would you change?"
+  }
+]

@@ -6,7 +6,7 @@
 cd "$(dirname "$0")"
 
 # Check if pytest and pytest-cov are installed
-python -m pip install -q pytest pytest-cov
+uv pip install -q pytest pytest-cov
 
 # Colors for output
 GREEN='\033[0;32m'

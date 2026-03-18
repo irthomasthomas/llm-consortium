@@ -140,7 +140,7 @@ def test_config_to_dict_includes_embedding_fields():
     assert serialized["embedding_cache_enabled"] is False
 
 
-def test_config_backwards_compatible_without_embedding_fields():
+def test_config_default_embedding_fields():
     from llm_consortium.models import ConsortiumConfig
 
     config = ConsortiumConfig(models={"dummy": 1}, arbiter="dummy")

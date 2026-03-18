@@ -34,6 +34,9 @@ class ConsortiumConfig(BaseModel):
     embedding_model: Optional[str] = None
     embedding_cache_enabled: bool = True
     manual_context: bool = Field(default=False, description="Use manual context management instead of automatic conversation objects")
+    category: Optional[str] = None
+    expected_agreement: Optional[float] = None
+    status: Optional[str] = None
 
     def model_post_init(self, __context: Any) -> None:
         self.strategy = _normalize_mode_name(self.strategy, "default")
@@ -43,11 +46,8 @@ class ConsortiumConfig(BaseModel):
         if self.embedding_model is not None:
             self.embedding_model = self.embedding_model.strip() or None
 
+        # Elimination strategy requires ranking output, so force rank judging
         if self.strategy == "elimination" and self.judging_method != "rank":
-            logger.warning(
-                "Elimination strategy requires rank judging; overriding judging_method=%r to 'rank'.",
-                self.judging_method,
-            )
             self.judging_method = "rank"
 
     def to_dict(self):
@@ -158,3 +158,28 @@ class ConsortiumModel(llm.Model):
             yield synthesis_text
         else:
             yield str(result)
+
+# Register models function for the plugin system
+def register_models(register):
+    """Register all saved consortiums as models."""
+    from .db import DatabaseConnection
+    import json
+    
+    try:
+        db = DatabaseConnection.get_connection()
+        if "consortium_configs" not in db.table_names():
+            return
+        
+        for row in db["consortium_configs"].rows:
+            name = row.get("name")
+            if name:
+                try:
+                    config_data = json.loads(row.get("config", "{}"))
+                    # Use the existing ConsortiumModel class
+                    model = ConsortiumModel(name, ConsortiumConfig.from_dict(config_data))
+                    register(model)
+                    logger.debug(f"Registered consortium model: {name}")
+                except Exception as e:
+                    logger.error(f"Failed to register consortium model '{name}': {e}")
+    except Exception as e:
+        logger.error(f"Failed to register consortium models: {e}")

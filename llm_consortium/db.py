@@ -45,6 +45,9 @@ class DatabaseConnection:
                     iteration_count INTEGER,
                     final_confidence REAL,
                     user_prompt TEXT,
+                    category TEXT,
+                    expected_agreement REAL,
+                    status TEXT,
                     FOREIGN KEY (config_name) REFERENCES consortium_configs(name)
                 )
             """)
@@ -71,6 +74,8 @@ class DatabaseConnection:
                     decision_json TEXT,
                     ranking_json TEXT,
                     refinement_areas TEXT,
+                    geometric_confidence REAL,
+                    centroid_vector TEXT,
                     PRIMARY KEY (run_id, iteration),
                     FOREIGN KEY (run_id) REFERENCES consortium_runs(id),
                     FOREIGN KEY (response_id) REFERENCES responses(id),
@@ -135,7 +140,10 @@ def save_consortium_run(
     iteration_count: int,
     final_confidence: float,
     user_prompt: str,
-    config_name: Optional[str] = None
+    config_name: Optional[str] = None,
+    category: Optional[str] = None,
+    expected_agreement: Optional[float] = None,
+    status: Optional[str] = "success"
 ):
     try:
         db = DatabaseConnection.get_connection()
@@ -149,7 +157,10 @@ def save_consortium_run(
             "max_iterations": max_iterations,
             "iteration_count": iteration_count,
             "final_confidence": final_confidence,
-            "user_prompt": user_prompt
+            "user_prompt": user_prompt,
+            "category": category,
+            "expected_agreement": expected_agreement,
+            "status": status
         }, ignore=True, alter=True)
         db.conn.commit()
     except Exception as e:
@@ -160,13 +171,20 @@ def update_consortium_run(
     run_id: str,
     iteration_count: int,
     final_confidence: float,
+    status: Optional[str] = None
 ) -> None:
     try:
         db = DatabaseConnection.get_connection()
-        db.conn.execute(
-            "UPDATE consortium_runs SET iteration_count = ?, final_confidence = ? WHERE id = ?",
-            [iteration_count, final_confidence, run_id],
-        )
+        if status:
+            db.conn.execute(
+                "UPDATE consortium_runs SET iteration_count = ?, final_confidence = ?, status = ? WHERE id = ?",
+                [iteration_count, final_confidence, status, run_id],
+            )
+        else:
+            db.conn.execute(
+                "UPDATE consortium_runs SET iteration_count = ?, final_confidence = ? WHERE id = ?",
+                [iteration_count, final_confidence, run_id],
+            )
         db.conn.commit()
     except Exception as e:
         logger.error(f"Error updating consortium_run summary: {e}")
@@ -260,17 +278,11 @@ def get_embedding_records_for_run(run_id: str) -> List[Dict[str, Any]]:
     if "response_embeddings" not in db.table_names():
         return []
 
-    geometric_confidence_select = "NULL AS geometric_confidence"
-    if "arbiter_decisions" in db.table_names():
-        arbiter_columns = {column.name for column in db["arbiter_decisions"].columns}
-        if "geometric_confidence" in arbiter_columns:
-            geometric_confidence_select = "ad.geometric_confidence"
-
     return [
         dict(row)
         for row in db.query(
             "SELECT re.response_id, re.run_id, re.model, re.embedding_json, re.embedding_model, re.created_at, "
-            f"cm.iteration, cm.member_index, {geometric_confidence_select} "
+            "cm.iteration, cm.member_index, ad.geometric_confidence "
             "FROM response_embeddings re "
             "LEFT JOIN consortium_members cm ON cm.response_id = re.response_id AND cm.run_id = re.run_id "
             "LEFT JOIN arbiter_decisions ad ON ad.run_id = re.run_id AND ad.iteration = cm.iteration "

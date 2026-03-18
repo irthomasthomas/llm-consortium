@@ -14,43 +14,36 @@ LLM Consortium is a plugin for the `llm` package that implements a model consort
    cd llm-consortium
    ```
 
-2. Create and activate a virtual environment:
+2. Initialize development environment with `uv`:
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate  # On Windows: .venv\Scripts\activate
-   ```
-
-3. Install development dependencies:
-   ```bash
-   pip install -e ".[dev]"
+   uv sync --all-extras
    ```
 
 ## Project Structure
 
 - `llm_consortium/`: Main package directory
   - `__init__.py`: Core implementation
-  - `system_prompt.xml`: Default system prompt
-  - `arbiter_prompt.xml`: Prompt for the arbiter model
-  - `iteration_prompt.xml`: Prompt for iteration refinement
-- `tests/`: Test directory
-  - `test_llm_consortium.py`: Unit tests for the main package
-  - `test_cli.py`: CLI tests
-- `examples/`: Example usage and documentation
+  - `system_prompt.xml`, `arbiter_prompt.xml`, `iteration_prompt.xml`: Prompt templates
+- `tests/`: Unit and integration tests
+- `evals/`: Evaluation and benchmarking tools
+- `scripts/`: Shared setup and utility scripts
+- `docs/`: In-depth documentation and research notes
+- `examples/`: Example usage and demonstration configs
 - `pyproject.toml`: Project configuration
-- `README.md`: Project documentation
+- `README.md`: Main project entry point
 
 ## Testing
 
 Run the test suite:
 
 ```bash
-pytest
+uv run pytest
 ```
 
 For coverage report:
 
 ```bash
-pytest --cov=llm_consortium
+uv run pytest --cov=llm_consortium
 ```
 
 ## Code Style
@@ -58,8 +51,8 @@ pytest --cov=llm_consortium
 This project follows PEP 8 style guidelines. Use tools like `black` for formatting and `flake8` for linting:
 
 ```bash
-black llm_consortium tests
-flake8 llm_consortium tests
+uv run black llm_consortium tests
+uv run flake8 llm_consortium tests
 ```
 
 ## Making Changes
@@ -73,7 +66,7 @@ flake8 llm_consortium tests
 
 3. Run the test suite to ensure tests pass:
    ```bash
-   pytest
+   uv run pytest
    ```
 
 4. Commit your changes with descriptive commit messages.
@@ -101,3 +94,59 @@ When reporting a bug, please include:
 For questions or discussions about development, please use the Discussions tab in the repository.
 
 Thank you for contributing to LLM Consortium!
+
+## Development Setup
+
+### Prerequisites
+- Python 3.8+
+- `llm` CLI tool installed
+- Git
+
+### Quick Start
+
+```bash
+# Clone the repository
+git clone https://github.com/irthomasthomas/llm-consortium.git
+cd llm-consortium
+
+# Use the quick setup script (handles venv creation)
+./scripts/quick_setup.sh
+
+# Or manually:
+python -m venv .venv
+source .venv/bin/activate
+pip install -e ".[embeddings,visualize,dev]"
+llm install -e .
+```
+
+### Dependency Management
+
+The package has three dependency groups:
+
+1. **Core** (always installed): Required for basic functionality
+2. **Embeddings**: For semantic clustering features
+3. **Visualize**: For plotly-based visualizations
+4. **Dev**: Development tools (pytest, black, flake8)
+
+Install specific groups:
+```bash
+pip install -e ".[embeddings]"     # Just embeddings
+pip install -e ".[visualize]"      # Just visualization
+pip install -e ".[dev]"            # Just dev tools
+pip install -e ".[embeddings,visualize,dev]"  # Everything
+```
+
+### Running Tests
+
+```bash
+make test
+# Or:
+pytest tests/ -v --cov=llm_consortium
+```
+
+### Auto-Dependency Installation
+
+The package includes a first-run dependency check that will automatically install missing core dependencies. To disable this behavior (e.g., in CI), set:
+```bash
+export LLM_CONSORTIUM_SKIP_DEP_CHECK=1
+```

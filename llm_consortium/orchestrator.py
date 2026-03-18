@@ -1,10 +1,11 @@
 import concurrent.futures
-import json
+import logging
 import re
 import uuid
+import json
+import time
 import pathlib
-import logging
-from typing import Dict, List, Optional, Any
+from typing import List, Dict, Any, Optional
 
 import llm
 
@@ -18,7 +19,7 @@ from .db import (
 )
 from .embeddings.service import EmbeddingService, create_embedding_service
 from .geometry import GeometricConfidenceCalculator
-from .models import ConsortiumConfig, resolve_alias_options
+from .models import ConsortiumConfig
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,10 @@ class ConsortiumOrchestrator:
             iteration_count=0,
             final_confidence=0.0,
             user_prompt=prompt,
-            config_name=self.config_name
+            config_name=self.config_name,
+            category=self.config.category,
+            expected_agreement=self.config.expected_agreement,
+            status="running"
         )
         
         for iteration in range(1, self.max_iterations + 1):
@@ -107,6 +111,7 @@ class ConsortiumOrchestrator:
             valid_responses = [r for r in model_responses if r.get('error') is None]
             if not valid_responses:
                 logger.error("No valid responses from models in this iteration.")
+                self.config.status = "embedding_failure" if getattr(self.config, 'embedding_backend', None) else "model_failure"
                 break
             
             synthesis_result = self._synthesize_responses_manual(prompt, valid_responses, self.iteration_history, iteration)
@@ -143,6 +148,7 @@ class ConsortiumOrchestrator:
             run_id=str(consortium_id),
             iteration_count=len(self.iteration_history),
             final_confidence=float(synthesis_dict.get("confidence", 0.0) or 0.0),
+            status=self.config.status if self.config.status != "running" else ("empty_synthesis" if not synthesis_dict.get("synthesis") else "success")
         )
         
         return final_result
@@ -186,13 +192,7 @@ class ConsortiumOrchestrator:
             # Delegate prompt formulation entirely to strategy to maximize cache hits
             strategy_prompt = self.strategy.prepare_iteration_prompt(model_id, instance, prompt, iteration)
             full_prompt += strategy_prompt
-            
-            options = {}
-            alias_opts = resolve_alias_options(model_id)
-            if alias_opts and "options" in alias_opts:
-                options = alias_opts["options"]
-
-            response = model.prompt(full_prompt, system=instance_system_prompt, **options)
+            response = model.prompt(full_prompt, system=instance_system_prompt)
             text = response.text()
             
             confidence = 0.5
@@ -236,7 +236,10 @@ class ConsortiumOrchestrator:
             iteration_count=0,
             final_confidence=0.0,
             user_prompt=prompt,
-            config_name=self.config_name
+            config_name=self.config_name,
+            category=self.config.category,
+            expected_agreement=self.config.expected_agreement,
+            status="running"
         )
         
         model_tasks = []
@@ -270,6 +273,7 @@ class ConsortiumOrchestrator:
             valid_responses = [r for r in responses if r.get('error') is None]
             if not valid_responses:
                 logger.error("No valid responses from models in this iteration.")
+                self.config.status = "embedding_failure" if getattr(self.config, 'embedding_backend', None) else "model_failure"
                 break
             
             synthesis_result = self._synthesize_responses_automatic(prompt, valid_responses, self.iteration_history, iteration)
@@ -306,6 +310,7 @@ class ConsortiumOrchestrator:
             run_id=str(consortium_id),
             iteration_count=len(self.iteration_history),
             final_confidence=float(synthesis_dict.get("confidence", 0.0) or 0.0),
+            status=self.config.status if self.config.status != "running" else ("empty_synthesis" if not synthesis_dict.get("synthesis") else "success")
         )
         
         return final_result
@@ -344,12 +349,7 @@ class ConsortiumOrchestrator:
             conversation = task["conversation"]
             instance_system_prompt = task.get("system_prompt")
             
-            options = {}
-            alias_opts = resolve_alias_options(model_id)
-            if alias_opts and "options" in alias_opts:
-                options = alias_opts["options"]
-
-            response = conversation.prompt(prompt, system=instance_system_prompt, **options)
+            response = conversation.prompt(prompt, system=instance_system_prompt)
             text = response.text()
             
             rid = hash(f"{model_id}_{task['instance']}_{iteration}") % 1000
@@ -390,12 +390,7 @@ class ConsortiumOrchestrator:
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history)
         arbiter_model = llm.get_model(self.arbiter)
         
-        prompt_kwargs = {"stream": False}
-        alias_opts = resolve_alias_options(self.arbiter)
-        if alias_opts and "options" in alias_opts:
-            prompt_kwargs.update(alias_opts["options"])
-        
-        response = arbiter_model.prompt(arbiter_prompt, **prompt_kwargs)
+        response = arbiter_model.prompt(arbiter_prompt, stream=False)
         raw_arbiter_text = response.text()
         log_response(response, self.arbiter, self.consortium_id)
         
@@ -455,12 +450,7 @@ class ConsortiumOrchestrator:
         
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history)
         
-        prompt_kwargs = {}
-        alias_opts = resolve_alias_options(self.arbiter)
-        if alias_opts and "options" in alias_opts:
-             prompt_kwargs.update(alias_opts["options"])
-
-        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False, **prompt_kwargs)
+        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter, self.consortium_id)
         
@@ -624,7 +614,9 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
                      minimum_iterations: int = 1, system_prompt: Optional[str] = None,
                      judging_method: str = "default", manual_context: bool = False,
                      strategy: str = "default", strategy_params: Optional[Dict[str, Any]] = None,
-                     config_name: Optional[str] = None) -> ConsortiumOrchestrator:
+                     config_name: Optional[str] = None,
+                     embedding_backend: Optional[str] = None,
+                     embedding_model: Optional[str] = None) -> ConsortiumOrchestrator:
     
     from .models import parse_models
     
@@ -642,6 +634,8 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
         judging_method=judging_method,
         manual_context=manual_context,
         strategy=strategy,
-        strategy_params=strategy_params
+        strategy_params=strategy_params,
+        embedding_backend=embedding_backend,
+        embedding_model=embedding_model
     )
     return ConsortiumOrchestrator(config, config_name=config_name)

@@ -1,90 +1,92 @@
-import logging
+"""LLM Consortium - Implementing Karpathy's model consortium approach."""
+import os
 import sys
 import llm
 
-from .db import (
-    DatabaseConnection,
-    log_response,
-    logs_db_path,
-    user_dir
-)
+# First-run dependency check (runs silently once per import)
+_dep_check_done = False
 
-from .models import (
-    ConsortiumConfig,
-    ConsortiumModel,
-    DummyModel,
-    _get_consortium_configs
-)
+def _check_and_install_deps():
+    """Check and auto-install missing dependencies on first import."""
+    global _dep_check_done
+    if _dep_check_done or os.environ.get('LLM_CONSORTIUM_SKIP_DEP_CHECK') == '1':
+        return
+    
+    _dep_check_done = True
+    import subprocess
+    import importlib
+    
+    core_deps = {
+        'httpx': 'httpx',
+        'sqlite_utils': 'sqlite-utils',
+        'numpy': 'numpy',
+        'colorama': 'colorama',
+        'pydantic': 'pydantic',
+    }
+    
+    missing = []
+    for module, package in core_deps.items():
+        try:
+            importlib.import_module(module)
+        except ImportError:
+            missing.append(package)
+    
+    if missing:
+        print(f"[llm-consortium] Installing: {', '.join(missing)}", file=sys.stderr)
+        subprocess.check_call([
+            sys.executable, '-m', 'pip', 'install', '--quiet'
+        ] + missing, stderr=subprocess.DEVNULL)
 
-from .orchestrator import (
-    ConsortiumOrchestrator,
-    create_consortium,
-    IterationContext
-)
+# Run check on import
+try:
+    _check_and_install_deps()
+except Exception:
+    pass  # Silently fail if auto-install doesn't work
 
+# Version
+__version__ = "0.8.0"
+
+# Import core classes for public API and to satisfy tests
+from .db import DatabaseConnection
+from .models import ConsortiumConfig, ConsortiumModel
+from .orchestrator import ConsortiumOrchestrator, IterationContext
+
+# Import CLI and model registration hooks for llm
 from .cli import register_commands
+import llm
+import json
+import logging
 
-def setup_logging() -> None:
-    """Configure logging to write to both file and console."""
-    log_path = user_dir() / "consortium.log"
-
-    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.ERROR)
-    console_handler.setFormatter(formatter)
-
-    file_handler = logging.FileHandler(str(log_path))
-    file_handler.setLevel(logging.ERROR)
-    file_handler.setFormatter(formatter)
-
-    root_logger = logging.getLogger()
-    root_logger.setLevel(logging.ERROR)
-    root_logger.addHandler(console_handler)
-    root_logger.addHandler(file_handler)
-
-setup_logging()
 logger = logging.getLogger(__name__)
-logger.debug("llm_karpathy_consortium module is being imported")
 
 @llm.hookimpl
 def register_models(register):
-    logger.debug("Registering saved consortium models")
-    
+    """Register all saved consortiums as models."""
     try:
-        dummy_model = DummyModel()
-        register(dummy_model, aliases=("dummy",))
-        logger.debug("Registered dummy model for testing")
+        db = DatabaseConnection.get_connection()
+        if "consortium_configs" not in db.table_names():
+            return
+        
+        for row in db["consortium_configs"].rows:
+            name = row.get("name")
+            if name:
+                try:
+                    config_data = json.loads(row.get("config", "{}"))
+                    config = ConsortiumConfig.from_dict(config_data)
+                    model = ConsortiumModel(name, config)
+                    register(model)
+                    logger.debug(f"Registered consortium model: {name}")
+                except Exception as e:
+                    logger.error(f"Failed to register consortium model '{name}': {e}")
     except Exception as e:
-        logger.error(f"Failed to register dummy model: {e}")
-    
-    try:
-        configs = _get_consortium_configs()
-        for name, config in configs.items():
-            try:
-                if not config.models or not config.arbiter:
-                     logger.warning(f"Skipping registration of invalid consortium '{name}': Missing models or arbiter.")
-                     continue
-                model_instance = ConsortiumModel(name, config)
-                register(model_instance, aliases=(name,))
-                logger.debug(f"Registered consortium model: {name}")
-            except Exception as e:
-                logger.error(f"Failed to register consortium model '{name}': {e}")
-    except Exception as e:
-        logger.error(f"Failed to load or register consortium configurations: {e}")
-
-class KarpathyConsortiumPlugin:
-    @staticmethod
-    @llm.hookimpl
-    def register_commands(cli):
-        # Defers to the actual implementation in cli.py which is exported through our __init__.py
-        pass 
+        logger.error(f"Failed to register consortium models: {e}")
 
 __all__ = [
-    'KarpathyConsortiumPlugin', 'ConsortiumModel', 'ConsortiumConfig',
-    'ConsortiumOrchestrator', 'create_consortium', 'register_commands',
-    'register_models', 'log_response', 'DatabaseConnection', 'logs_db_path',
-    'user_dir', 'IterationContext'
+    "ConsortiumOrchestrator",
+    "IterationContext",
+    "ConsortiumConfig",
+    "ConsortiumModel",
+    "DatabaseConnection",
+    "register_commands",
+    "register_models",
 ]
-
-__version__ = "0.8.0"
