@@ -37,6 +37,7 @@ class ConsortiumConfig(BaseModel):
     category: Optional[str] = None
     expected_agreement: Optional[float] = None
     status: Optional[str] = None
+    created_at: Optional[str] = None
 
     def model_post_init(self, __context: Any) -> None:
         self.strategy = _normalize_mode_name(self.strategy, "default")
@@ -85,7 +86,10 @@ def _get_consortium_configs() -> Dict[str, ConsortiumConfig]:
     for row in db["consortium_configs"].rows:
         try:
              config_data = json.loads(row.get("config") or row.get("config_json"))
-             configs[row["name"]] = ConsortiumConfig.from_dict(config_data)
+             config = ConsortiumConfig.from_dict(config_data)
+             # Add database metadata to the config object
+             config.created_at = row.get("created_at")
+             configs[row["name"]] = config
         except Exception as e:
              logger.error(f"Failed to load consortium config '{row['name']}': {e}")
     return configs
@@ -111,6 +115,7 @@ class DummyModel(llm.Model):
             return message
 
 class ConsortiumModel(llm.Model):
+
     class Options(llm.Options):
         max_iterations: Optional[int] = None
         system_prompt: Optional[str] = None
@@ -122,7 +127,12 @@ class ConsortiumModel(llm.Model):
         self._orchestrator = None
 
     def __str__(self):
-        return f"Consortium Model: {self.model_id}"
+        return f"Consortium: {self.model_id}"
+
+    @property
+    def description(self):
+        models_summary = ", ".join(f"{v}x {k}" for k, v in self.config.models.items())
+        return f"Consortium strategy '{self.config.strategy or 'default'}' using models: {models_summary}"
 
     def get_orchestrator(self):
         if self._orchestrator is None:
@@ -135,29 +145,83 @@ class ConsortiumModel(llm.Model):
         return self._orchestrator
 
     def execute(self, prompt, stream, response, conversation):
-        orchestator = self.get_orchestrator()
-        
         consortium_id = str(uuid.uuid4())
-        
-        history = None
-        if conversation:
-            try:
-                history_text = []
-                for entry in conversation.responses:
-                    history_text.append(f"Human: {entry.prompt.prompt}")
-                    history_text.append(f"Assistant: {entry.text()}")
-                if history_text:
-                    history = "\n".join(history_text)
-            except:
-                pass
+        """Execute the consortium synchronously"""
+        try:
+            # Extract conversation history from the conversation object directly
+            conversation_history = ""
+            if conversation and hasattr(conversation, 'responses') and conversation.responses:
+                logger.info(f"Processing conversation with {len(conversation.responses)} previous exchanges")
+                history_parts = []
+                for resp in conversation.responses:
+                    # Handle prompt format
+                    human_prompt = "[prompt unavailable]"
+                    if hasattr(resp, 'prompt') and resp.prompt:
+                        if hasattr(resp.prompt, 'prompt'):
+                            human_prompt = resp.prompt.prompt
+                        else:
+                            human_prompt = str(resp.prompt)
 
-        result = orchestator.orchestrate(prompt.prompt, conversation_history=history, consortium_id=consortium_id)
-        
-        synthesis_text = result.get("synthesis", {}).get("synthesis", "")
-        if synthesis_text:
-            yield synthesis_text
-        else:
-            yield str(result)
+                    # Handle response text format
+                    assistant_response = "[response unavailable]"
+                    if hasattr(resp, 'text') and callable(resp.text):
+                        assistant_response = resp.text()
+                    elif hasattr(resp, 'response') and resp.response:
+                        assistant_response = resp.response
+
+                    # Format the history exchange
+                    history_parts.append(f"Human: {human_prompt}")
+                    history_parts.append(f"Assistant: {assistant_response}")
+
+                if history_parts:
+                    conversation_history = "\n\n".join(history_parts)
+                    logger.info(f"Successfully formatted {len(history_parts)//2} exchanges from conversation history")
+
+            # Check if a system prompt was provided via --system option
+            if hasattr(prompt, 'system') and prompt.system:
+                # Create a copy of the config with the updated system prompt
+                updated_config = ConsortiumConfig(**self.config.to_dict())
+                updated_config.system_prompt = prompt.system
+                # Create a new orchestrator with the updated config
+                from .orchestrator import ConsortiumOrchestrator
+                orchestrator = ConsortiumOrchestrator(updated_config)
+                result = orchestrator.orchestrate(prompt.prompt, conversation_history=conversation_history, consortium_id=consortium_id)
+            else:
+                # Use the default orchestrator with the original config
+                orchestrator = self.get_orchestrator()
+                result = orchestrator.orchestrate(prompt.prompt, conversation_history=conversation_history, consortium_id=consortium_id)
+
+            # --- BEGIN REVISED FALLBACK LOGIC ---
+            # Check result details from orchestrate
+            final_synthesis_data = result.get("synthesis", {}) # This dict contains parsed fields and raw_arbiter_response
+            raw_arbiter_response = final_synthesis_data.get("raw_arbiter_response", "")
+            parsed_synthesis = final_synthesis_data.get("synthesis", "") # This is the parsed <synthesis> content
+            analysis_text = final_synthesis_data.get("analysis", "")
+
+            # Determine if parsing failed or synthesis is insufficient
+            # Check 1: Explicit parsing failure message
+            # Check 2: Parsed synthesis is empty, but raw response is not (likely missing <synthesis> tag)
+            # Check 3: Parsed synthesis is exactly the raw response (parser fallback returned raw) AND no explicit success analysis
+            is_fallback = ("Parsing failed" in analysis_text) or \
+                          (not parsed_synthesis and raw_arbiter_response) or \
+                          (parsed_synthesis == raw_arbiter_response and raw_arbiter_response) # Simpler check: If parsed == raw and raw is not empty, it's likely the fallback.
+
+            if is_fallback:
+                 final_output_text = raw_arbiter_response if raw_arbiter_response else "Error: Arbiter response unavailable or empty."
+                 logger.warning("Arbiter response parsing failed or synthesis missing/empty. Returning raw arbiter response for logging.")
+            else:
+                 # Parsing seemed successful, return the clean synthesis
+                 final_output_text = parsed_synthesis
+
+            # Store the full result JSON in the response object for logging (existing code)
+            response.response_json = result # Ensure this is still done before returning
+            # Return the determined final text (clean synthesis or raw fallback)
+            return final_output_text
+            # --- END REVISED FALLBACK LOGIC ---
+
+        except Exception as e:
+            logger.exception(f"Consortium execution failed: {e}")
+            raise llm.ModelError(f"Consortium execution failed: {e}")
 
 # Register models function for the plugin system
 def register_models(register):

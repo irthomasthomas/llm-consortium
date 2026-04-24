@@ -476,7 +476,7 @@ wheels = [
 
 [[package]]
 name = "llm-consortium"
-version = "0.8.0"
+version = "0.8.1"
 source = { virtual = "." }
 dependencies = [
     { name = "asyncio" },

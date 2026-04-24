@@ -191,8 +191,44 @@ def register_commands(cli):
             click.echo("")
 
 
+    def _print_consortium_config(name, config):
+        click.echo(f"Name: {name}")
+        if config.created_at:
+            click.echo(f"  Created: {config.created_at}")
+        
+        click.echo(f"  Strategy: {config.strategy or 'default'}")
+        
+        if config.strategy_params:
+            params_str = ", ".join(f"{k}={v}" for k, v in config.strategy_params.items())
+            click.echo(f"  Strategy Params: {params_str}")
+
+        click.echo(f"  Models: {', '.join(f'{k}:{v}' for k, v in config.models.items())}")
+        click.echo(f"  Arbiter: {config.arbiter}")
+        
+        # Combine iterations for brevity
+        if config.minimum_iterations == config.max_iterations:
+            iter_str = f"{config.max_iterations}"
+        else:
+            iter_str = f"{config.minimum_iterations}-{config.max_iterations}"
+        
+        click.echo(f"  Threshold: {config.confidence_threshold} | Iterations: {iter_str}")
+        
+        if config.category:
+            click.echo(f"  Category: {config.category}")
+        
+        system_prompt_display = config.system_prompt
+        if system_prompt_display and len(system_prompt_display) > 60:
+             system_prompt_display = system_prompt_display[:57] + "..."
+        
+        click.echo(f"  Judging: {config.judging_method} | Context: {'Manual' if config.manual_context else 'Auto'}")
+        click.echo(f"  System Prompt: {system_prompt_display or 'Default'}")
+        
+        if config.embedding_backend:
+             click.echo(f"  Embedding: {config.embedding_backend} ({config.embedding_model or 'default'})")
+
     @consortium.command(name="list")
-    def list_command():
+    @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+    def list_command(json_output):
         """List all saved consortium configurations."""
         try:
             configs = _get_consortium_configs()
@@ -200,24 +236,49 @@ def register_commands(cli):
              raise click.ClickException(f"Error reading consortium configurations: {e}")
 
         if not configs:
-            click.echo("No saved consortiums found.")
+            if json_output:
+                click.echo("[]")
+            else:
+                click.echo("No saved consortiums found.")
+            return
+
+        if json_output:
+            output = []
+            for name, config in configs.items():
+                d = config.to_dict()
+                d["name"] = name
+                output.append(d)
+            click.echo(json.dumps(output, indent=2))
             return
 
         click.echo("Available saved consortiums:\n")
-        for name, config in configs.items():
-            click.echo(f"Name: {name}")
-            click.echo(f"  Models: {', '.join(f'{k}:{v}' for k, v in config.models.items())}")
-            click.echo(f"  Arbiter: {config.arbiter}")
-            click.echo(f"  Confidence Threshold: {config.confidence_threshold}")
-            click.echo(f"  Max Iterations: {config.max_iterations}")
-            click.echo(f"  Min Iterations: {config.minimum_iterations}")
-            system_prompt_display = config.system_prompt
-            if system_prompt_display and len(system_prompt_display) > 60:
-                 system_prompt_display = system_prompt_display[:57] + "..."
-            click.echo(f"  System Prompt: {system_prompt_display or 'Default'}")
-            click.echo(f"  Judging Method: {config.judging_method}")
-            click.echo(f"  Context Mode: {'Manual' if config.manual_context else 'Automatic'}")
+        # Sort by created_at if possible, otherwise by name
+        sorted_items = sorted(configs.items(), key=lambda x: (x[1].created_at or "", x[0]), reverse=True)
+        
+        for name, config in sorted_items:
+            _print_consortium_config(name, config)
             click.echo("")
+
+    @consortium.command(name="info")
+    @click.argument("name")
+    @click.option("--json", "json_output", is_flag=True, help="Output as JSON")
+    def info_command(name, json_output):
+        """Show detailed configuration for a specific consortium."""
+        try:
+            configs = _get_consortium_configs()
+            if name not in configs:
+                raise click.ClickException(f"Consortium '{name}' not found.")
+            config = configs[name]
+        except Exception as e:
+             raise click.ClickException(f"Error reading consortium configuration: {e}")
+
+        if json_output:
+            d = config.to_dict()
+            d["name"] = name
+            click.echo(json.dumps(d, indent=2))
+            return
+
+        _print_consortium_config(name, config)
 
 
     @consortium.command(name="remove")
