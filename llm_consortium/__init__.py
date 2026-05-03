@@ -134,6 +134,7 @@ class ConsortiumConfig(BaseModel):
 class ConsortiumOrchestrator:
     def __init__(self, config: ConsortiumConfig):
         self.models = config.models
+        self.config = config
         self.system_prompt = config.system_prompt
         self.confidence_threshold = config.confidence_threshold
         self.max_iterations = config.max_iterations

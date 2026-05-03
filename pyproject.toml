@@ -28,7 +28,8 @@ llm_consortium = "llm_consortium"
 filterwarnings = ["ignore::DeprecationWarning"]
 
 [tool.setuptools]
-packages = ["llm_consortium"]
+[tool.setuptools.packages.find]
+include = ["llm_consortium*"]
 
 [tool.setuptools.package-data]
 llm_consortium = [
