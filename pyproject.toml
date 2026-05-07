@@ -1,6 +1,6 @@
 [project]
 name = "llm-consortium"
-version = "0.8.1"
+version = "0.8.2"
 description = "LLM plugin implementing Andrej Karpathy's model consortium tweet"
 readme = "README.md"
 authors = [{name = "Thomas Hughes", email = "irthomasthomas@gmail.com"}]
@@ -47,9 +47,8 @@ llm_consortium = "llm_consortium"
 [tool.pytest.ini_options]
 filterwarnings = ["ignore::DeprecationWarning"]
 
-[tool.setuptools]
-packages = ["llm_consortium", "llm_consortium.embeddings", "llm_consortium.strategies"]
-
+[tool.setuptools.packages.find]
+      include = ["llm_consortium*"]
 [tool.setuptools.package-data]
 llm_consortium = [
     "system_prompt.xml",
