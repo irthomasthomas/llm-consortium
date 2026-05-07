@@ -118,12 +118,22 @@ async def list_models():
     """List all available models (non-consortium)."""
     try:
         all_models = llm.get_models()
+        # Get consortium config names to exclude them from model list
+        try:
+            cons_names = set(_get_consortium_configs().keys())
+        except:
+            cons_names = set()
         model_ids = []
         for m in all_models:
             mid = m.model_id
-            # Skip consortium models and OpenAI Chat wrapper names
-            if mid and not mid.startswith("cns-") and not mid.startswith("consortium"):
-                model_ids.append(mid)
+            if not mid:
+                continue
+            # Skip consortium configs and known non-model IDs
+            if (mid in cons_names or 
+                mid.startswith("cns-") or 
+                "." not in mid):  # consortium configs typically don't have dots
+                continue
+            model_ids.append(mid)
         return {"models": sorted(set(model_ids))}
     except Exception as e:
         return {"models": [], "error": str(e)}
@@ -385,5 +395,5 @@ async def stop_run(run_id: str = Query(...)):
 if __name__ == "__main__":
     import uvicorn
     print(f"Starting Consortium Studio API server...")
-    print(f"LLM DB: {DatabaseConnection.get_connection().db_path}")
+    print(f"LLM DB: {DatabaseConnection.get_connection().conn if hasattr(DatabaseConnection.get_connection(), "conn") else "connected"}")
     uvicorn.run(app, host="0.0.0.0", port=8765)
