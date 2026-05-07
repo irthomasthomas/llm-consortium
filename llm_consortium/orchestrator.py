@@ -64,10 +64,53 @@ class ConsortiumOrchestrator:
         self.consortium_id = None
         self._embedding_service: Optional[EmbeddingService] = None
 
+        # Conversation management - persist across turns
+        self.model_conversations: dict = {}  # Key: f"{model_name}_{instance_id}"
+        self.arbiter_conversation = None
+
     def get_embedding_service(self) -> EmbeddingService:
         if self._embedding_service is None:
             self._embedding_service = create_embedding_service(self.config)
         return self._embedding_service
+
+    def _get_model_conversation(self, model_name: str, instance_id: int):
+        """Get or create a conversation for a specific model instance."""
+        if self.manual_context:
+            return None
+        key = f"{model_name}_{instance_id}"
+        if key not in self.model_conversations:
+            try:
+                model = llm.get_model(model_name)
+                self.model_conversations[key] = model.conversation()
+                logger.debug(f"Created new conversation for {key}")
+            except Exception as e:
+                logger.error(f"Failed to create conversation for {model_name} instance {instance_id}: {e}")
+                return None
+        return self.model_conversations[key]
+
+    def _get_arbiter_conversation(self):
+        """Get or create a conversation for the arbiter."""
+        if self.manual_context:
+            return None
+        if self.arbiter_conversation is None:
+            try:
+                model = llm.get_model(self.arbiter)
+                self.arbiter_conversation = model.conversation()
+                logger.debug(f"Created new conversation for arbiter {self.arbiter}")
+            except Exception as e:
+                logger.error(f"Failed to create conversation for arbiter {self.arbiter}: {e}")
+                return None
+        return self.arbiter_conversation
+
+    def reset_model_conversations(self) -> None:
+        """Reset all stored model conversations."""
+        self.model_conversations.clear()
+        logger.info("All model conversations reset.")
+
+    def reset_arbiter_conversation(self) -> None:
+        """Reset the stored arbiter conversation."""
+        self.arbiter_conversation = None
+        logger.info("Arbiter conversation reset.")
 
     def orchestrate(self, prompt: str, conversation_history: Optional[str] = None, consortium_id: Optional[str] = None) -> Dict[str, Any]:
         """Main entry point for orchestration - chooses method based on config."""
@@ -249,8 +292,11 @@ class ConsortiumOrchestrator:
                 instance_system_prompt = self.strategy.get_instance_system_prompt(
                     model_id, i, self.system_prompt
                 )
-                model_obj = llm.get_model(model_id)
-                conversation = model_obj.conversation()
+                # Use persistent conversation object for multi-turn support
+                conversation = self._get_model_conversation(model_id, i)
+                if conversation is None:
+                    model_obj = llm.get_model(model_id)
+                    conversation = model_obj.conversation()
                 model_tasks.append({
                     "model_id": model_id,
                     "instance": i,
@@ -258,8 +304,9 @@ class ConsortiumOrchestrator:
                     "system_prompt": instance_system_prompt
                 })
         
+        # Store conversation history for first-iteration context injection
         if conversation_history:
-             pass
+            self._conversation_history = conversation_history
 
         for iteration in range(1, self.max_iterations + 1):
             logger.info(f"Starting iteration {iteration}")
@@ -349,7 +396,16 @@ class ConsortiumOrchestrator:
             conversation = task["conversation"]
             instance_system_prompt = task.get("system_prompt")
             
-            response = conversation.prompt(prompt, system=instance_system_prompt)
+            # Inject conversation history on first iteration for multi-turn context
+            full_prompt = prompt
+            if iteration == 1 and hasattr(self, '_conversation_history') and self._conversation_history:
+                full_prompt = f"""<conversation_history>
+{self._conversation_history}
+</conversation_history>
+
+{prompt}"""
+            
+            response = conversation.prompt(full_prompt, system=instance_system_prompt)
             text = response.text()
             
             rid = hash(f"{model_id}_{task['instance']}_{iteration}") % 1000
@@ -446,7 +502,9 @@ class ConsortiumOrchestrator:
              }
 
         arbiter_model = llm.get_model(self.arbiter)
-        arbiter_conversation = arbiter_model.conversation()
+        arbiter_conversation = self._get_arbiter_conversation()
+        if arbiter_conversation is None:
+            arbiter_conversation = arbiter_model.conversation()
         
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history)
         
