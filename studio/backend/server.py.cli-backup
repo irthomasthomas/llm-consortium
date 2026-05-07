@@ -1,0 +1,371 @@
+"""
+LLM Consortium Studio Backend
+Bridges the React frontend with the llm-consortium CLI plugin.
+"""
+import asyncio
+import json
+import os
+import sqlite3
+import subprocess
+import sys
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import AsyncIterator, Optional
+
+from fastapi import FastAPI, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
+
+app = FastAPI(title="LLM Consortium Studio API")
+
+# CORS for Vite dev server
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Configuration ---
+LLM_DB_PATH = Path.home() / ".config/io.datasette.llm/logs.db"
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def get_llm_db() -> sqlite3.Connection:
+    """Connect to the llm logs database."""
+    conn = sqlite3.connect(str(LLM_DB_PATH))
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+# --- Pydantic Models ---
+class ConsortiumConfig(BaseModel):
+    name: str
+    models: list[str]
+    instance_count: int = 1
+    arbiter: Optional[str] = None
+    confidence_threshold: float = 0.8
+    max_iterations: int = 3
+    min_iterations: int = 1
+    strategy: str = "default"
+    judging_method: str = "default"
+    system_prompt: Optional[str] = None
+
+class RunRequest(BaseModel):
+    config_name: str
+    prompt: str
+
+class SaveConfigRequest(BaseModel):
+    name: str
+    models: list[str]
+    arbiter: Optional[str] = None
+    confidence_threshold: float = 0.8
+    max_iterations: int = 3
+    min_iterations: int = 1
+    strategy: str = "default"
+    judging_method: str = "default"
+
+
+# --- API Endpoints ---
+@app.get("/api/models")
+async def list_models():
+    """List all available LLM models (not consortium aliases)."""
+    try:
+        result = subprocess.run(
+            ["llm", "models"],
+            capture_output=True, text=True, timeout=10
+        )
+        models = []
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            # Lines look like "Provider: model_id" or just "model_id"
+            # Extract everything after the last ": " which is the model ID
+            if ": " in line:
+                model_id = line.split(": ", 1)[-1].strip()
+            else:
+                model_id = line
+            if model_id and model_id not in models and not model_id.startswith("Consortium"):
+                models.append(model_id)
+        return {"models": sorted(models)}
+    except Exception as e:
+        return {"models": [], "error": str(e)}
+
+
+@app.get("/api/consortiums")
+async def list_consortiums():
+    """List all saved consortium configurations."""
+    try:
+        result = subprocess.run(
+            ["llm", "consortium", "list"],
+            capture_output=True, text=True, timeout=10
+        )
+        consortiums = []
+        current = None
+        for line in result.stdout.split("\n"):
+            # Keep original line for indentation check
+            original = line
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("Name:") and not stripped.startswith("Name: Available"):
+                if current and current.get("name"):
+                    consortiums.append(current)
+                current = {"name": stripped.split("Name:")[1].strip()}
+            elif current and original.startswith("  "):
+                # Indented line (starts with 2 spaces)
+                if ": " in stripped:
+                    key, val = stripped.split(": ", 1)
+                    key = key.strip().lower().replace(" ", "_")
+                    current[key] = val.strip()
+                elif stripped.startswith("Strategy Params:"):
+                    current["strategy_params"] = stripped.split("Strategy Params:")[1].strip()
+        if current and current.get("name"):
+            consortiums.append(current)
+        return {"consortiums": consortiums}
+    except Exception as e:
+        return {"consortiums": [], "error": str(e)}
+
+
+@app.get("/api/runs")
+async def list_runs(limit: int = Query(50, ge=1, le=200)):
+    """List recent consortium runs."""
+    try:
+        db = get_llm_db()
+        cursor = db.execute("""
+            SELECT * FROM consortium_runs
+            ORDER BY created_at DESC
+            LIMIT ?
+        """, (limit,))
+        runs = [dict(row) for row in cursor.fetchall()]
+        db.close()
+        return {"runs": runs}
+    except Exception as e:
+        return {"runs": [], "error": str(e)}
+
+
+@app.get("/api/runs/{run_id}")
+async def get_run_detail(run_id: str):
+    """Get detailed info about a specific consortium run."""
+    try:
+        db = get_llm_db()
+
+        # Get run metadata
+        cursor = db.execute(
+            "SELECT * FROM consortium_runs WHERE id = ?", (run_id,)
+        )
+        run = cursor.fetchone()
+        if not run:
+            raise HTTPException(status_code=404, detail="Run not found")
+        run_data = dict(run)
+
+        # Get member responses
+        cursor = db.execute(
+            "SELECT * FROM consortium_members WHERE consortium_run_id = ? ORDER BY iteration, model",
+            (run_id,)
+        )
+        members = [dict(row) for row in cursor.fetchall()]
+        run_data["members"] = members
+
+        # Get arbiter decisions
+        cursor = db.execute(
+            "SELECT * FROM arbiter_decisions WHERE consortium_run_id = ? ORDER BY iteration",
+            (run_id,)
+        )
+        decisions = [dict(row) for row in cursor.fetchall()]
+        run_data["decisions"] = decisions
+
+        db.close()
+        return run_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/runs/{run_id}/stream")
+async def stream_run(run_id: str):
+    """Stream a running consortium execution."""
+    async def event_generator():
+        # Poll for updates
+        db = get_llm_db()
+        last_member_count = 0
+        last_decision_count = 0
+        try:
+            while True:
+                cursor = db.execute(
+                    "SELECT * FROM consortium_runs WHERE id = ?", (run_id,)
+                )
+                run = cursor.fetchone()
+                if not run:
+                    break
+
+                run_dict = dict(run)
+
+                # Check for new members
+                cursor = db.execute(
+                    "SELECT * FROM consortium_members WHERE consortium_run_id = ?",
+                    (run_id,)
+                )
+                members = [dict(row) for row in cursor.fetchall()]
+
+                # Check for new decisions
+                cursor = db.execute(
+                    "SELECT * FROM arbiter_decisions WHERE consortium_run_id = ?",
+                    (run_id,)
+                )
+                decisions = [dict(row) for row in cursor.fetchall()]
+
+                if len(members) > last_member_count or len(decisions) > last_decision_count:
+                    last_member_count = len(members)
+                    last_decision_count = len(decisions)
+                    run_dict["members"] = members
+                    run_dict["decisions"] = decisions
+                    yield f"data: {json.dumps(run_dict, default=str)}\n\n"
+
+                if run_dict.get("status") in ("success", "failed", "error"):
+                    yield f"data: {json.dumps(run_dict, default=str)}\n\n"
+                    yield "data: [DONE]\n\n"
+                    break
+
+                await asyncio.sleep(0.5)
+        finally:
+            db.close()
+
+    return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+
+@app.post("/api/consortiums/save")
+async def save_consortium(config: SaveConfigRequest):
+    """Save a new consortium configuration."""
+    try:
+        cmd = [
+            "llm", "consortium", "save", config.name,
+            "-m", *config.models,
+            "--confidence-threshold", str(config.confidence_threshold),
+            "--max-iterations", str(config.max_iterations),
+            "--min-iterations", str(config.min_iterations),
+            "--strategy", config.strategy,
+            "--judging-method", config.judging_method,
+        ]
+        if config.arbiter:
+            cmd.extend(["--arbiter", config.arbiter])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            raise HTTPException(status_code=400, detail=result.stderr or result.stdout)
+        return {"status": "saved", "name": config.name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/consortiums/run")
+async def run_consortium(request: RunRequest):
+    """Run a consortium and return the run ID for streaming."""
+    run_id = str(uuid.uuid4())
+    try:
+        # Check if consortium config exists
+        check = subprocess.run(
+            ["llm", "consortium", "info", request.config_name],
+            capture_output=True, text=True, timeout=10
+        )
+        if check.returncode != 0:
+            raise HTTPException(status_code=404, detail=f"Consortium '{request.config_name}' not found")
+
+        # Build the run command
+        cmd = ["llm", "-m", request.config_name, request.prompt]
+
+        # Run in background subprocess
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        async def stream_output():
+            try:
+                # Stream stdout line by line
+                async for line in process.stdout:
+                    text = line.decode("utf-8", errors="replace").rstrip()
+                    yield f"data: {json.dumps({'type': 'output', 'text': text})}\n\n"
+
+                await process.wait()
+
+                # After completion, fetch the run result from DB
+                db = get_llm_db()
+                cursor = db.execute(
+                    "SELECT id FROM consortium_runs ORDER BY created_at DESC LIMIT 1"
+                )
+                row = cursor.fetchone()
+                db.close()
+
+                if row:
+                    yield f"data: {json.dumps({'type': 'complete', 'run_id': row['id']})}\n\n"
+                else:
+                    yield f"data: {json.dumps({'type': 'complete', 'message': 'Run finished'})}\n\n"
+
+                yield "data: [DONE]\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'text': str(e)})}\n\n"
+                yield "data: [DONE]\n\n"
+
+        return StreamingResponse(stream_output(), media_type="text/event-stream")
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/consortiums/delete")
+async def delete_consortium(name: str = Query(...)):
+    """Remove a saved consortium configuration."""
+    try:
+        result = subprocess.run(
+            ["llm", "consortium", "remove", name],
+            capture_output=True, text=True, timeout=10
+        )
+        if result.returncode != 0:
+            raise HTTPException(status_code=400, detail=result.stderr)
+        return {"status": "deleted", "name": name}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/strategies")
+async def list_strategies():
+    """List available consortium strategies."""
+    try:
+        result = subprocess.run(
+            ["llm", "consortium", "strategies"],
+            capture_output=True, text=True, timeout=10
+        )
+        strategies = []
+        current = {}
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if line.startswith("Name:"):
+                if current:
+                    strategies.append(current)
+                current = {"name": line.split("Name:")[1].strip()}
+            elif current and ":" in line:
+                key, val = line.split(":", 1)
+                current[key.strip().lower()] = val.strip()
+        if current:
+            strategies.append(current)
+        return {"strategies": strategies}
+    except Exception as e:
+        return {"strategies": [], "error": str(e)}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8765)
