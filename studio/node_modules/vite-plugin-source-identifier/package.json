@@ -1,0 +1,42 @@
+{
+  "name": "vite-plugin-source-identifier",
+  "version": "1.1.2",
+  "description": "A Vite plugin that adds source location and component information to DOM elements during development",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "test": "cd examples/react-demo && npm run dev"
+  },
+  "keywords": [
+    "vite",
+    "plugin",
+    "react",
+    "vue",
+    "development",
+    "debugging",
+    "source-map"
+  ],
+  "author": "MiniMax Agent",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/babel__core": "^7.20.5",
+    "@types/babel__traverse": "^7.20.7",
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0",
+    "vite": "^5.1.0"
+  },
+  "dependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/parser": "^7.24.0",
+    "@babel/traverse": "^7.28.0",
+    "@babel/types": "^7.24.0",
+    "@vue/compiler-dom": "^3.4.0",
+    "magic-string": "^0.30.7"
+  },
+  "peerDependencies": {
+    "vite": ">=5.0.0"
+  }
+}

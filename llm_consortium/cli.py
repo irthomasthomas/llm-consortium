@@ -133,14 +133,22 @@ def register_commands(cli):
         multiple=True,
         help="Parameters for the strategy, format KEY=VALUE. Can be provided multiple times.",
     )
+    @click.option(
+        "--cache-delay",
+        type=float,
+        default=None,
+        help="Delay in seconds between first and subsequent instances for cache-aware strategy (default: 0.5).",
+    )
     def save_command(name, models, count, arbiter, confidence_threshold, max_iterations,
                      min_iterations, system_prompt_content, judging_method, manual_context, strategy,
                      embedding_backend, embedding_model, clustering_algorithm, cluster_eps, cluster_min_samples,
-                     strategy_params_list):
+                     strategy_params_list, cache_delay):
         """Save a consortium configuration to be used as a model."""
         
         model_dict = parse_models(models, count)
         strategy_params = _parse_strategy_params(strategy_params_list)
+        if cache_delay is not None:
+            strategy_params["cache_delay"] = str(cache_delay)
         if clustering_algorithm:
             strategy_params["clustering_algorithm"] = clustering_algorithm.lower()
             strategy_params["eps"] = cluster_eps

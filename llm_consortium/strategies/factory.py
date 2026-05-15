@@ -1,5 +1,6 @@
 from .base import ConsortiumStrategy
 from .default import DefaultStrategy
+from .cache_aware import CacheAwareStrategy
 from .elimination import EliminationStrategy
 from .role import RoleStrategy
 from .voting import VotingStrategy
@@ -24,6 +25,7 @@ if TYPE_CHECKING:
 
 # --- Strategy Registry ---
 _strategy_registry: Dict[str, Type[ConsortiumStrategy]] = {
+    "cache_aware": CacheAwareStrategy,
     "default": DefaultStrategy,
     "elimination": EliminationStrategy,
     "role": RoleStrategy,
@@ -31,6 +33,7 @@ _strategy_registry: Dict[str, Type[ConsortiumStrategy]] = {
 }
 
 _strategy_descriptions: Dict[str, str] = {
+    "cache_aware": "Serialize first model instance per model to establish prompt cache, then parallelize remaining instances for cost savings.",
     "default": "Run all configured members and synthesize their responses.",
     "elimination": "Use arbiter ranking to remove weaker models across iterations.",
     "role": "Assign distinct cognitive roles or personalities to member instances.",
