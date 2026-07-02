@@ -29,6 +29,19 @@ MODEL_ALIASES = {
 def canonical_model(name: str) -> str:
     return MODEL_ALIASES.get(name, name)
 
+def wilson_lower_bound(wins: int, total: int, z: float = 1.96) -> float:
+    """Wilson score lower bound for binomial proportion.
+    Gives conservative estimate for small samples."""
+    if total == 0:
+        return 0.0
+    p = wins / total
+    denominator = 1 + z * z / total
+    centre = p + z * z / (2 * total)
+    spread = z * ((p * (1 - p) / total + z * z / (4 * total * total)) ** 0.5)
+    return max(0.0, (centre - spread) / denominator)
+
+
+
 def learn_from_history() -> Dict[str, Dict[str, Any]]:
     db = DatabaseConnection.get_connection()
     if "consortium_runs" not in db.table_names():
@@ -77,10 +90,12 @@ def learn_from_history() -> Dict[str, Dict[str, Any]]:
         for model, appear_count in appearances.items():
             win_count = wins.get(model, 0)
             win_rate = win_count / appear_count if appear_count > 0 else 0
-            if appear_count >= 2:
+            if appear_count >= 10:  # PATCHED: was 2, raised for statistical validity
+                wilson_lb = wilson_lower_bound(win_count, appear_count)
                 model_stats.append({"model": model, "wins": win_count,
-                    "appearances": appear_count, "win_rate": round(win_rate, 3)})
-        model_stats.sort(key=lambda x: (-x["win_rate"], -x["wins"]))
+                    "appearances": appear_count, "win_rate": round(win_rate, 3),
+                    "wilson_lower": round(wilson_lb, 3)})
+        model_stats.sort(key=lambda x: (-x.get("wilson_lower", x["win_rate"]), -x["wins"]))  # PATCHED: Wilson LB
         selected = [m["model"] for m in model_stats if m["win_rate"] >= 0.20][:3]
         if selected:
             rules[category] = {"models": selected,
