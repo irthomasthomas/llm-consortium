@@ -44,6 +44,21 @@ if SEMANTIC_AVAILABLE:
 else:
     logger.debug(f"SemanticClusteringStrategy not available: {_semantic_import_error}")
 
+# Register routing strategies (ported from llm-router)
+try:
+    from .ring_ling import RingLingStrategy
+    _strategy_registry["ring_ling"] = RingLingStrategy
+    _strategy_descriptions["ring_ling"] = "Two-stage pipeline: reasoning model generates chain-of-thought, answer model uses it as context."
+except ImportError as e:
+    logger.debug(f"RingLingStrategy not available: {e}")
+
+try:
+    from .cascade import CascadeStrategy
+    _strategy_registry["cascade"] = CascadeStrategy
+    _strategy_descriptions["cascade"] = "Cost-aware escalation: start with cheap model, escalate to stronger model on errors."
+except ImportError as e:
+    logger.debug(f"CascadeStrategy not available: {e}")
+
 
 def list_available_strategies() -> Dict[str, Dict[str, str]]:
     """Return discoverable built-in strategies with human-readable descriptions."""

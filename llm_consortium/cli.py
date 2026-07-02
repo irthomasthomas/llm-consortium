@@ -404,3 +404,54 @@ def register_commands(cli):
                 if iter_decision.get('refinement_areas') and iter_decision.get('refinement_areas') != '[]':
                     click.echo(f"    Refinement: {iter_decision.get('refinement_areas')}")
 
+    @consortium.command(name="route")
+    @click.argument("prompt", required=False)
+    @click.option("--explain", "-e", is_flag=True, help="Show classification and routing decision")
+    @click.option("--json", "-j", "as_json", is_flag=True, help="Output as JSON")
+    def route_cmd(prompt, explain, as_json):
+        """Classify a prompt and show the routing decision."""
+        import sys as _sys
+        if not prompt:
+            prompt = _sys.stdin.read().strip()
+        if not prompt:
+            click.echo("Error: No prompt provided", err=True)
+            _sys.exit(1)
+        try:
+            from .classifier import classify
+            result = classify(prompt)
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            _sys.exit(1)
+        if as_json:
+            import json as _json
+            click.echo(_json.dumps(result, indent=2, default=str))
+        elif explain:
+            click.echo(f"Category:   {result['category']}")
+            click.echo(f"Confidence: {result['confidence']:.1%}")
+            click.echo(f"Method:     {result['method']}")
+            routing = result.get("routing", {})
+            click.echo(f"Strategy:   {routing.get('strategy', 'default')}")
+            click.echo(f"Models:     {', '.join(routing.get('models', []))}")
+        else:
+            models = result.get("routing", {}).get("models", ["unknown"])
+            click.echo(models[0] if models else "unknown")
+
+    @consortium.command(name="learn")
+    @click.option("--dry-run", is_flag=True, help="Show rules without updating")
+    def learn_cmd(dry_run):
+        """Mine historical battles and show routing rules."""
+        try:
+            from .learning import learn_from_history, format_rules_report
+            rules = learn_from_history()
+        except Exception as e:
+            click.echo(f"Error: {e}", err=True)
+            return
+        if not rules:
+            click.echo("No battle history found.")
+            return
+        click.echo(format_rules_report(rules))
+        if not dry_run:
+            from .learning import persist_rules
+            msg = persist_rules(rules)
+            click.echo(f"\n{msg}")
+
