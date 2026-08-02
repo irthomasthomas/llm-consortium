@@ -10,6 +10,7 @@ from typing import List, Dict, Any, Optional
 import llm
 
 from .strategies.factory import create_strategy
+from .strategies.cache_aware import execute_cache_aware_responses
 from .db import (
     log_response,
     save_consortium_run,
@@ -197,6 +198,17 @@ class ConsortiumOrchestrator:
         return final_result
 
     def _get_model_responses_manual(self, prompt: str, models: Dict[str, int], iteration: int) -> List[Dict[str, Any]]:
+        # Auto-detect multi-instance models and use cache-aware execution
+        # This is automatic for ALL strategies when multiple instances of the same model exist
+        if self._has_multi_instance_models(models):
+            # Use strategy's cache_delay if available, else default 0.5s
+            cache_delay = getattr(self.strategy, 'cache_delay', 0.5)
+            logger.info(f"Cache-aware execution (auto, delay={cache_delay}s) for {len(models)} models")
+            return execute_cache_aware_responses(
+                self, prompt, models, iteration,
+                self._get_single_model_response_manual
+            )
+        
         tasks = []
         for model_id, count in models.items():
             for i in range(count):
@@ -367,6 +379,22 @@ class ConsortiumOrchestrator:
         responses = []
         active_tasks = [t for t in tasks if t["model_id"] in selected_models]
         
+        # Auto-detect multi-instance models and use cache-aware execution
+        if self._has_multi_instance_models(selected_models):
+            cache_delay = getattr(self.strategy, 'cache_delay', 0.5)
+            logger.info(f"Cache-aware execution (auto, delay={cache_delay}s)")
+            def _auto_response_fn(model_id, prompt, instance, iteration):
+                task = next((t for t in active_tasks if t["model_id"] == model_id and t["instance"] == instance), None)
+                if task is None:
+                    task = {"model_id": model_id, "instance": instance, "conversation": None, "system_prompt": None}
+                iter_prompt = self.strategy.prepare_iteration_prompt(model_id, instance, prompt, iteration)
+                return self._get_single_response_automatic(task, iter_prompt, iteration)
+            
+            return execute_cache_aware_responses(
+                self, prompt, selected_models, iteration_idx,
+                _auto_response_fn
+            )
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(active_tasks) or 1, 10)) as executor:
             future_to_task = {}
             for task in active_tasks:
@@ -427,6 +455,10 @@ class ConsortiumOrchestrator:
         except Exception as e:
             logger.error(f"Automatic response error for {task['model_id']}: {e}")
             raise
+
+    def _has_multi_instance_models(self, models: Dict[str, int]) -> bool:
+        """Check if any model has more than 1 instance configured."""
+        return any(count > 1 for count in models.values())
 
     def _synthesize_responses_manual(self, prompt: str, responses: List[Dict[str, Any]], 
                                    history: List[Dict[str, Any]], iteration: int) -> Dict[str, Any]:

@@ -336,3 +336,10 @@ Or manually test:
 source .venv/bin/activate
 llm consortium --help
 ```
+
+## Usage
+
+```bash
+llm consortium "Your prompt here"
+```
+
