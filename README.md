@@ -343,3 +343,29 @@ llm consortium --help
 llm consortium "Your prompt here"
 ```
 
+
+## Development Workflow
+
+- **`main`** — stable, releasable.
+- **`dev`** — integration frontier; all active work lands here, then merges to `main`.
+
+```
+main ──── stable/release
+  ↑
+dev ───── active development (merge → main when green)
+```
+
+Short-lived branches (`fix/*`, `feat/*`) are merged into `dev` within ~2 weeks or deleted.
+
+### Archived branches
+Any branch that is merged or cleaned up is preserved forever as a tag under
+`archive/*` (e.g. `archive/experimental`). To restore a deleted branch:
+
+```bash
+git checkout -b <name> archive/<name>
+```
+
+### Studio (two options)
+- Zero-dependency dashboard: `python3 studio/server.py [port]` (no build step)
+- Rich React UI: `cd studio && npm install && npm run dev` +
+  `python3 studio/backend/server.py` (FastAPI + SSE)
