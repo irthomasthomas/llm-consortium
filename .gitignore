@@ -19,3 +19,14 @@ analysis_report.json
 evidence_pack.md
 results/.env
 uv.lock
+
+# build/dependency artifacts (must stay out of git)
+.vite/
+studio/.vite/
+studio/node_modules/
+studio/package-lock.json
+studio/pnpm-lock.yaml
+build/
+*.egg-info/
+__pycache__/
+*.pyc

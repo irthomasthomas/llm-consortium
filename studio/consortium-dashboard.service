@@ -1,0 +1,24 @@
+[Unit]
+Description=LLM Consortium Dashboard
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/consortium-dashboard
+Environment="DB_PATH=/opt/consortium-dashboard/data/consortium_logs.db"
+ExecStart=/usr/bin/python3 /opt/consortium-dashboard/server.py 8888
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/consortium-dashboard/data
+
+[Install]
+WantedBy=multi-user.target
