@@ -76,3 +76,25 @@ Direct SQLite queries to `~/.config/io.datasette.llm/consortium_logs.db`:
 - `arbiter_decisions` (1,413 rows)
 - `consortium_configs` (670 rows)
 - `response_embeddings` (666 rows)
+
+---
+
+## React Studio (rich UI, optional)
+
+The `feature/studio-backend` UI was merged into this repo as an optional richer
+alternative. It uses React + TypeScript + Vite with shadcn/ui, and a FastAPI
+backend at `studio/backend/server.py`.
+
+```bash
+cd studio
+npm install
+npm run dev            # frontend on :5173
+python3 backend/server.py   # API backend (FastAPI)
+```
+
+Views: Studio, Compare, Analytics, History, Leaderboard, LiveEval. SSE live
+streaming, direct Python API integration (no CLI subprocess). Excludes
+consortium configs from the model list.
+
+The zero-dependency dashboard above (`studio/server.py`) remains the default
+when you just want a quick read-only view without any build step.
