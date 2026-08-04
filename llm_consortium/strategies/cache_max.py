@@ -45,7 +45,6 @@ class CacheMaxStrategy(CacheAwareStrategy):
         self.prewarm_max_tokens = int(self.params.get('prewarm_max_tokens', 1))
         self.arbiter_shared_prefix = self.params.get('arbiter_shared_prefix', True)
         self.same_model_arbiter_prefix = self.params.get('same_model_arbiter_prefix', True)
-        self.cache_pad = self.params.get('cache_pad', True)
         self._prewarm_sent = False
         self._prewarm_thread = None
         self._prewarm_info = {}
@@ -71,17 +70,10 @@ Improve upon the previous iteration based on this synthesis:
         return self.get_arbiter_prefix(original_prompt) + guid
 
     def get_arbiter_prefix(self, original_prompt: str) -> str:
-        prefix = ARBITER_STATIC_PREFIX.format(
+        return ARBITER_STATIC_PREFIX.format(
             original_prompt=original_prompt,
             user_instructions=self.orchestrator.system_prompt or ""
         )
-        if getattr(self, 'cache_pad', True):
-            est_tokens = max(1, len(prefix) // 4)
-            want_tokens = 192  # >1 full 128-token block: DeepSeek cache threshold
-            if est_tokens < want_tokens:
-                filler = "\n\n" + ("Cache-coherent consortium context block. " * 40)
-                prefix = prefix + filler[: (want_tokens - est_tokens) * 4]
-        return prefix
 
     def get_arbiter_system_prompt(self) -> Optional[str]:
         return self.orchestrator.system_prompt
