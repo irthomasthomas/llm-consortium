@@ -11,6 +11,7 @@ import llm
 
 from .strategies.factory import create_strategy
 from .strategies.cache_aware import execute_cache_aware_responses
+from .strategies.cache_max import execute_cache_max_responses
 from .db import (
     log_response,
     save_consortium_run,
@@ -204,7 +205,8 @@ class ConsortiumOrchestrator:
             # Use strategy's cache_delay if available, else default 0.5s
             cache_delay = getattr(self.strategy, 'cache_delay', 0.5)
             logger.info(f"Cache-aware execution (auto, delay={cache_delay}s) for {len(models)} models")
-            return execute_cache_aware_responses(
+            executor_fn = execute_cache_max_responses if getattr(self.strategy, 'prewarm_arbiter', False) else execute_cache_aware_responses
+            return executor_fn(
                 self, prompt, models, iteration,
                 self._get_single_model_response_manual
             )
@@ -323,7 +325,10 @@ class ConsortiumOrchestrator:
         for iteration in range(1, self.max_iterations + 1):
             logger.info(f"Starting iteration {iteration}")
             
-            available_models = {task["model_id"]: 1 for task in model_tasks}
+            # Count real instances per model so multi-instance cache-aware serialization kicks in
+            available_models: Dict[str, int] = {}
+            for task in model_tasks:
+                available_models[task["model_id"]] = available_models.get(task["model_id"], 0) + 1
             selected_models = self.strategy.select_models(available_models, prompt, iteration)
             
             responses = self._get_model_responses_automatic(prompt, model_tasks, selected_models, iteration)
@@ -390,7 +395,8 @@ class ConsortiumOrchestrator:
                 iter_prompt = self.strategy.prepare_iteration_prompt(model_id, instance, prompt, iteration)
                 return self._get_single_response_automatic(task, iter_prompt, iteration)
             
-            return execute_cache_aware_responses(
+            executor_fn = execute_cache_max_responses if getattr(self.strategy, 'prewarm_arbiter', False) else execute_cache_aware_responses
+            return executor_fn(
                 self, prompt, selected_models, iteration_idx,
                 _auto_response_fn
             )
@@ -478,7 +484,9 @@ class ConsortiumOrchestrator:
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history)
         arbiter_model = llm.get_model(self.arbiter)
         
-        response = arbiter_model.prompt(arbiter_prompt, stream=False)
+        arbiter_system = getattr(self.strategy, 'get_arbiter_system_prompt', None)
+        sys_prompt = arbiter_system() if callable(arbiter_system) else None
+        response = arbiter_model.prompt(arbiter_prompt, system=sys_prompt, stream=False)
         raw_arbiter_text = response.text()
         log_response(response, self.arbiter, self.consortium_id)
         
@@ -540,7 +548,9 @@ class ConsortiumOrchestrator:
         
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history)
         
-        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, stream=False)
+        arbiter_system = getattr(self.strategy, 'get_arbiter_system_prompt', None)
+        sys_prompt = arbiter_system() if callable(arbiter_system) else None
+        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, system=sys_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter, self.consortium_id)
         
@@ -615,6 +625,24 @@ class ConsortiumOrchestrator:
         template = _read_arbiter_prompt()
         if not template:
             template = "Original prompt: {original_prompt}\\nModel responses:\\n{formatted_responses}\\nIteration history:\\n{formatted_history}\\nAnalyze the responses and provide a synthesis."
+
+        # CacheMax: static prefix first (identical to member/iteration prompt prefix
+        # and to the pre-warm request), dynamic responses LAST. This maximizes
+        # prefix-cache hits for same-model arbiters and for pre-warmed arbiters.
+        if getattr(self.strategy, 'arbiter_shared_prefix', False):
+            static_prefix = self.strategy.get_arbiter_prefix(prompt)
+            dynamic_suffix = (
+                "\\n\\n<model_responses>\\n"
+                + formatted_responses
+                + "\\n</model_responses>\\n\\n<iteration_history>\\n"
+                + formatted_history
+                + "\\n</iteration_history>\\n\\n"
+                + "Analyze the responses. Wrap your thought process in <thinking> tags, "
+                + "then emit <synthesis_output> with synthesis, confidence, "
+                + "ranked responses, refinement_areas and needs_iteration as described "
+                + "in the consortium protocol."
+            )
+            return static_prefix + dynamic_suffix
 
         return template.format(
             original_prompt=prompt,
