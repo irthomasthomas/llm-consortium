@@ -26,6 +26,14 @@ MODEL_ALIASES = {
     "mimo-v2.5-pro-zen": "mimo-v2.5",
 }
 
+# Roles stored in consortium_members.role that are NOT real model names.
+# The learning loop must skip these or phantom "models" pollute win rates.
+NON_MODEL_ROLES = frozenset({
+    "arbiter", "arbiter-prewarm", "dummy", "member",
+    "healer-alpha", "hunter-alpha",
+})
+
+
 def canonical_model(name: str) -> str:
     return MODEL_ALIASES.get(name, name)
 
@@ -77,7 +85,9 @@ def learn_from_history() -> Dict[str, Dict[str, Any]]:
             continue
         for member in members:
             model = canonical_model(member["role"])
-            if model in ("arbiter", "dummy", "member", "healer-alpha", "hunter-alpha"):
+            # Exclude synthetic roles (arbiter bookkeeping rows like
+            # "arbiter-prewarm" from cache_max) and known non-model placeholders.
+            if model in NON_MODEL_ROLES or model.startswith(("arbiter", "prewarm")):
                 continue
             category_appearances[category][model] += 1
             if member["response_id"] == run["chosen_response_id"]:
