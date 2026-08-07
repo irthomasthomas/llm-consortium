@@ -160,6 +160,14 @@ Improve upon the previous iteration based on this synthesis:
         usage JSON. Returns {} when the provider reports nothing."""
         try:
             usage = response.usage
+            # llm.Response exposes usage as a method; some mocks/dicts as attr
+            if callable(usage):
+                usage = None  # method object holds no data; use json() instead
+            if usage is None:
+                try:
+                    usage = (response.json() or {}).get("usage")
+                except Exception:
+                    usage = None
             if usage is None:
                 return {}
             data = usage if isinstance(usage, dict) else {}
