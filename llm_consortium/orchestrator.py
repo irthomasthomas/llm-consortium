@@ -637,10 +637,16 @@ class ConsortiumOrchestrator:
                 + "\\n</model_responses>\\n\\n<iteration_history>\\n"
                 + formatted_history
                 + "\\n</iteration_history>\\n\\n"
-                + "Analyze the responses. Wrap your thought process in <thinking> tags, "
-                + "then emit <synthesis_output> with synthesis, confidence, "
-                + "ranked responses, refinement_areas and needs_iteration as described "
-                + "in the consortium protocol."
+                + "Analyze the responses, then reply in EXACTLY this format:\n\n"
+                + "<synthesis_output>\n"
+                + "<analysis>[How you arrived at the synthesis]</analysis>\n"
+                + "<dissent>[Notable dissenting views, if any]</dissent>\n"
+                + "<synthesis>[Comprehensive synthesized answer; no meta-analysis]</synthesis>\n"
+                + "<confidence>[0.0-1.0]</confidence>\n"
+                + "<refinement_areas>[Areas needing refinement, if any]</refinement_areas>\n"
+                + "<needs_iteration>[true|false]</needs_iteration>\n"
+                + "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
+                + "</synthesis_output>"
             )
             return static_prefix + dynamic_suffix
 
