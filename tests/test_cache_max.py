@@ -281,6 +281,7 @@ class TestCacheTelemetry:
     def _response_with_usage(self, usage):
         resp = Mock()
         resp.usage = usage
+        resp.json.return_value = {"usage": usage or {}}
         return resp
 
     def test_extracts_deepseek_style_cache_fields(self):
@@ -308,9 +309,65 @@ class TestCacheTelemetry:
         type(resp).usage = property(lambda self: (_ for _ in ()).throw(RuntimeError("x")))
         assert CacheMaxStrategy.extract_cache_usage(resp) == {}
 
+    def test_handles_real_llm_response_api(self):
+        """llm.Response.usage is a bound method; cache data lives in json()."""
+        resp = Mock()
+        resp.json.return_value = {"usage": {
+            "prompt_tokens": 1000,
+            "prompt_cache_hit_tokens": 960,
+            "prompt_cache_miss_tokens": 40,
+            "prompt_tokens_details": {"cached_tokens": 960},
+        }}
+        out = CacheMaxStrategy.extract_cache_usage(resp)
+        assert out["cache_hit_tokens"] == 960
+        assert out["cache_hit_rate"] == 0.96
+
+    def test_json_failure_falls_back_safely(self):
+        resp = Mock()
+        resp.json.side_effect = ValueError("no json")
+        assert CacheMaxStrategy.extract_cache_usage(resp) == {}
+
     def test_prewarm_report_returns_copy(self):
         strategy = CacheMaxStrategy(make_orchestrator())
         strategy._prewarm_info = {"arbiter": "m"}
         report = strategy.prewarm_report()
         report["arbiter"] = "mutated"
         assert strategy._prewarm_info["arbiter"] == "m"
+
+
+class TestArbiterPromptParserContract:
+    """The cache_max arbiter prompt must request tags that
+    _parse_arbiter_response actually extracts (live eval caught confidence=0.0
+    because the prompt asked for vague 'synthesis_output with synthesis')."""
+
+    def _build_prompt(self):
+        from llm_consortium.orchestrator import ConsortiumOrchestrator
+        orch = make_orchestrator()
+        strategy = CacheMaxStrategy(orch)
+        orch.strategy = strategy
+        inst = ConsortiumOrchestrator.__new__(ConsortiumOrchestrator)
+        inst.strategy = strategy
+        inst.system_prompt = orch.system_prompt
+        inst._load_arbiter_prompt_template = lambda *a, **k: None
+        return inst, inst._prepare_arbiter_prompt("ORIG", [], [])
+
+    def test_prompt_requests_parser_aligned_tags(self):
+        _, prompt = self._build_prompt()
+        for tag in ("<synthesis>", "<confidence>", "<needs_iteration>",
+                    "<refinement_areas>", "<ranking>"):
+            assert tag in prompt, f"missing {tag}"
+
+    def test_parser_extracts_from_prompt_conforming_response(self):
+        inst, _ = self._build_prompt()
+        fake_arbiter_reply = """<synthesis_output>
+<analysis>A</analysis>
+<synthesis>SYNTHESIZED ANSWER</synthesis>
+<confidence>0.87</confidence>
+<needs_iteration>false</needs_iteration>
+<refinement_areas></refinement_areas>
+<ranking><rank position="1">1</rank></ranking>
+</synthesis_output>"""
+        parsed = inst._parse_arbiter_response(fake_arbiter_reply)
+        assert parsed["synthesis"] == "SYNTHESIZED ANSWER"
+        assert parsed["confidence"] == pytest.approx(0.87)
+        assert parsed["needs_iteration"] is False
