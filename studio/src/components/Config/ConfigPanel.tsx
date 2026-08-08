@@ -282,8 +282,11 @@ export function ConfigPanel({ onRun }: ConfigPanelProps) {
                 className="w-full bg-[#0D1321] border border-[#1E293B] rounded-md px-2.5 py-2 text-xs text-slate-200 focus:outline-none focus:border-blue-500/50"
               >
                 <option value="">Auto-select</option>
-                {(localConfig.models.length > 0 ? localConfig.models : availableModels.map(m => ({ id: m, name: m }))).map((m) => (
-                  <option key={m.id || m} value={m.name || m}>{m.name || m}</option>
+                {(localConfig.models.length > 0
+                  ? localConfig.models.map(m => ({ id: m.id, name: m.name }))
+                  : availableModels.map(m => ({ id: m, name: m }))
+                ).map((m) => (
+                  <option key={m.id} value={m.name}>{m.name}</option>
                 ))}
               </select>
               <div className="flex gap-1.5">

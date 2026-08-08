@@ -13,11 +13,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Optional, Dict, Any, List
 
-# Point to the installed llm environment
-LLM_SITE = Path.home() / ".local/share/uv/tools/llm/lib/python3.12/site-packages"
-sys.path.insert(0, str(LLM_SITE))
-
-import llm
+# Prefer a runtime-compatible installed llm package; only fall back to the
+# uv-managed Python 3.12 environment when llm is not importable directly.
+# (On Python 3.14, inserting the 3.12 site-packages causes jiter to load an
+# incompatible C extension and breaks pydantic.)
+try:
+    import llm
+except ImportError:
+    _LLM_SITE = Path.home() / ".local/share/uv/tools/llm/lib/python3.12/site-packages"
+    sys.path.insert(0, str(_LLM_SITE))
+    import llm
 from llm_consortium import ConsortiumOrchestrator, ConsortiumConfig
 from llm_consortium.models import _get_consortium_configs, _save_consortium_config, parse_models
 from llm_consortium.orchestrator import create_consortium

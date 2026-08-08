@@ -4,13 +4,13 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "pnpm install --prefer-offline && vite",
-    "build": "pnpm install --prefer-offline && rm -rf node_modules/.vite-temp && tsc -b && vite build",
-    "build:prod": "pnpm install --prefer-offline && rm -rf node_modules/.vite-temp && tsc -b && BUILD_MODE=prod vite build",
-    "lint": "pnpm install --prefer-offline && eslint .",
-    "preview": "pnpm install --prefer-offline && vite preview",
-    "install-deps": "pnpm install --prefer-offline",
-    "clean": "rm -rf node_modules .pnpm-store pnpm-lock.yaml && pnpm store prune"
+    "dev": "vite",
+    "build": "rm -rf node_modules/.vite-temp && tsc -b && vite build",
+    "build:prod": "rm -rf node_modules/.vite-temp && tsc -b && BUILD_MODE=prod vite build",
+    "lint": "eslint .",
+    "preview": "vite preview",
+    "install-deps": "npm install",
+    "clean": "rm -rf node_modules .pnpm-store pnpm-lock.yaml && npm cache clean --force"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -74,7 +74,7 @@
     "eslint": "^9.15.0",
     "eslint-plugin-react-hooks": "^5.0.0",
     "eslint-plugin-react-refresh": "^0.4.14",
-    "globals": "^15.12.0",    
+    "globals": "^15.12.0",
     "postcss": "8.4.49",
     "tailwindcss": "v3.4.16",
     "typescript": "~5.6.2",
