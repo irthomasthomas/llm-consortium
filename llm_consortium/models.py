@@ -34,6 +34,8 @@ class ConsortiumConfig(BaseModel):
     embedding_model: Optional[str] = None
     embedding_cache_enabled: bool = True
     manual_context: bool = Field(default=False, description="Use manual context management instead of automatic conversation objects")
+    skip_intermediate_synthesis: bool = Field(default=False, description="Skip full synthesis during intermediate iterations; arbiter provides evaluation and per-model guidance instead")
+    per_model_guidance: bool = Field(default=True, description="Generate per-model guidance for the next iteration when skipping intermediate synthesis")
     category: Optional[str] = None
     expected_agreement: Optional[float] = None
     status: Optional[str] = None
@@ -41,7 +43,9 @@ class ConsortiumConfig(BaseModel):
 
     def model_post_init(self, __context: Any) -> None:
         self.strategy = _normalize_mode_name(self.strategy, "default")
-        self.judging_method = _normalize_mode_name(self.judging_method, "default")
+        # rank-cot keeps its dash; other methods are lowercased
+        raw_jm = (self.judging_method or "default").strip().lower().replace(" ", "-")
+        self.judging_method = raw_jm or "default"
         if self.embedding_backend is not None:
             self.embedding_backend = self.embedding_backend.strip().lower() or None
         if self.embedding_model is not None:

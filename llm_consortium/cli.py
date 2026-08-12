@@ -85,9 +85,9 @@ def register_commands(cli):
     )
     @click.option(
         "--judging-method",
-        type=click.Choice(["default", "rank"], case_sensitive=False),
+        type=click.Choice(["default", "rank", "rank-cot"], case_sensitive=False),
         default="default",
-        help="Judging method for the arbiter (default=synthesis, rank)."
+        help="Judging method for the arbiter (default=synthesis, rank=ranking, rank-cot=ranking with chain-of-thought evaluation)."
     )
     @click.option(
         "--manual-context/--auto-context",
@@ -139,10 +139,22 @@ def register_commands(cli):
         default=None,
         help="Delay in seconds between first and subsequent instances for cache-aware strategy (default: 0.5).",
     )
+    @click.option(
+        "--skip-intermediate-synthesis",
+        is_flag=True,
+        default=False,
+        help="Skip full synthesis during intermediate iterations; arbiter provides evaluation and per-model guidance instead.",
+    )
+    @click.option(
+        "--no-per-model-guidance",
+        is_flag=True,
+        default=False,
+        help="Disable per-model guidance generation when using skip-intermediate-synthesis (uses shared guidance instead).",
+    )
     def save_command(name, models, count, arbiter, confidence_threshold, max_iterations,
                      min_iterations, system_prompt_content, judging_method, manual_context, strategy,
                      embedding_backend, embedding_model, clustering_algorithm, cluster_eps, cluster_min_samples,
-                     strategy_params_list, cache_delay):
+                     strategy_params_list, cache_delay, skip_intermediate_synthesis, no_per_model_guidance):
         """Save a consortium configuration to be used as a model."""
         
         model_dict = parse_models(models, count)
@@ -174,7 +186,9 @@ def register_commands(cli):
             strategy_params=strategy_params,
             embedding_backend=embedding_backend,
             embedding_model=embedding_model,
-            manual_context=manual_context
+            manual_context=manual_context,
+            skip_intermediate_synthesis=skip_intermediate_synthesis,
+            per_model_guidance=not no_per_model_guidance
         )
         try:
             _save_consortium_config(name, config)

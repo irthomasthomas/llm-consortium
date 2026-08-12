@@ -136,6 +136,35 @@ The semantic strategy stores per-response embeddings, consensus-cluster metadata
 - `strategy=elimination` automatically normalizes `judging_method` to `rank`, since the elimination strategy depends on arbiter ranking output.
 - Geometric confidence measures response-shape agreement, not factual correctness. High geometric confidence means the surviving responses are close in embedding space; it does not prove the answer is true.
 
+### Judging Methods
+
+The `--judging-method` option controls how the arbiter evaluates consortium member responses:
+
+| Method | Description |
+|--------|-------------|
+| `default` | Full synthesis — the arbiter analyzes all responses and produces a comprehensive synthesized answer. |
+| `rank` | Ranking — the arbiter ranks responses by quality and selects the best one as the consortium answer. Faster, no synthesis overhead. |
+| `rank-cot` | Chain-of-thought ranking — the arbiter evaluates each response against structured criteria (truthfulness, accuracy, reasoning depth, completeness), provides per-model guidance for improvement, and selects the best response. |
+
+### Skip Intermediate Synthesis
+
+When `--skip-intermediate-synthesis` is enabled, the arbiter skips full synthesis during intermediate iterations. Instead, it:
+
+1. **Evaluates** each response against quality criteria.
+2. **Provides per-model guidance** — specific, actionable feedback for each consortium member on how to improve.
+3. **Defers synthesis** until the final iteration or until the arbiter is confident.
+
+This reduces token usage and focuses intermediate rounds on targeted improvement. Use `--no-per-model-guidance` to disable per-model feedback (shared guidance instead).
+
+```bash
+llm consortium save my-consortium \
+    -m gpt-4o:2 -m claude-3:1 \
+    --arbiter gpt-4o \
+    --judging-method rank-cot \
+    --skip-intermediate-synthesis \
+    --max-iterations 3
+```
+
 ## Programmatic Usage
 
 Use the `create_consortium` helper to configure an orchestrator in your Python code. For example:
