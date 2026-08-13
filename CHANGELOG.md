@@ -38,7 +38,28 @@ Release 2026.03.06 (Version 0.8.0)
   - Validation status: full test suite passing locally; live Chutes embedding smoke test successful; real provider-backed answer-quality demonstration pending further evaluation.
 
 
-## [Unreleased] - Enhanced Judge Modes
+## [Unreleased] - Cache Max Strategy & Code Cleanup
+
+### Added
+- **`cache_max` strategy**: Maximizes provider prefix-cache hits by using a static prefix (system prompt + original prompt) for all member and arbiter requests, with dynamic content appended as suffix. Includes arbiter pre-warming.
+- **Parser-contract regression tests**: Comprehensive tests ensuring `_parse_arbiter_response` handles all prompt template variations correctly.
+- **Live A/B eval harness** (`evals/ab_cache_eval.py`): Side-by-side comparison of cache strategies measuring provider-reported cache telemetry.
+- **32 tests for cache_max strategy**: Coverage for pre-warming, prefix construction, and cache telemetry parsing.
+
+### Fixed
+- **Critical**: Missing `_read_rank_cot_prompt()` function caused `NameError` when using `rank-cot` judging method.
+- **Cache_max**: Aligned arbiter prompt tags with `_parse_arbiter_response` expectations.
+- **Cache_max**: Read cache telemetry from `response.json()` (llm API) instead of response attributes.
+- **Cache_max**: Hardened prewarm logic and stopped learning-loop pollution from prewarm requests.
+- **Studio**: React Studio now runs with npm on Python 3.14.
+- **Code quality**: Resolved all 42 pyflakes issues — removed 14 unused imports, deleted dead `consortium.py` (112 lines), fixed 3 f-strings without placeholders.
+
+### Changed
+- Removed cache-block padding from cache_max strategy (simpler approach with better cache alignment).
+- Removed VPS deploy/sync scripts from public repo.
+
+
+## [Released 2026.08.12] - Enhanced Judge Modes
 
 ### Added
 - **`rank-cot` judging method**: Combines ranking with chain-of-thought evaluation. The arbiter evaluates each response against structured criteria (truthfulness, accuracy, depth, completeness), provides per-model guidance, and selects the best response.
