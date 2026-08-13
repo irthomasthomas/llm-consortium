@@ -7,6 +7,9 @@ their confidence scores across iterations.
 from .base import ConsortiumStrategy
 from typing import List, Dict, Any
 import logging
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from llm_consortium import IterationContext
 
 logger = logging.getLogger(__name__)
 
@@ -92,8 +95,6 @@ class EliminationStrategy(ConsortiumStrategy):
     
     def update_state(self, iteration_context: 'IterationContext'):
         """Eliminate worst-ranked models after each iteration"""
-        from llm_consortium import IterationContext
-        
         synthesis = iteration_context.synthesis
         model_responses = iteration_context.model_responses
         iteration = self.iteration_state['iteration_count']

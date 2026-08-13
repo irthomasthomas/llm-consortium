@@ -1,9 +1,9 @@
 """
 Automated learning loop — mines consortium database for routing rules.
 """
-import json, logging
+import logging
 from collections import defaultdict
-from typing import Dict, List, Any
+from typing import Dict, Any
 from .db import DatabaseConnection
 from .classifier.regex_rules import classify_prompt
 
@@ -144,7 +144,7 @@ def format_rules_report(rules: Dict[str, Dict[str, Any]]) -> str:
         data = rules[category]
         lines.append(f"  {category.upper()} ({data['total_battles']} battles)")
         lines.append(f"    Recommended: {', '.join(data['models'])}")
-        lines.append(f"    Win rates:")
+        lines.append("    Win rates:")
         for model, rate in sorted(data["win_rates"].items(), key=lambda x: -x[1]):
             marker = "★" if model in data["models"] else " "
             lines.append(f"      {marker} {model:35} {rate:.1%}")

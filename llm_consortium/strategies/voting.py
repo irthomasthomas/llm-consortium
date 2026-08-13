@@ -6,7 +6,6 @@ implementing a consensus-based approach to model selection.
 
 from .base import ConsortiumStrategy
 from typing import List, Dict, Any, TYPE_CHECKING
-from collections import Counter
 import difflib
 import re
 import logging

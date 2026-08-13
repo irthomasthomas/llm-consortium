@@ -23,7 +23,6 @@ yields nothing; it never changes synthesis output.
    caching hits the warm prefix (cache hit == success).
 """
 
-import concurrent.futures
 import logging
 import threading
 import time

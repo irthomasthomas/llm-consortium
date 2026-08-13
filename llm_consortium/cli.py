@@ -397,7 +397,7 @@ def register_commands(cli):
             click.echo(json.dumps(output, indent=2))
             return
 
-        click.echo(f"\n=== Consortium Run Info ===")
+        click.echo("\n=== Consortium Run Info ===")
         click.echo(f"ID: {run_data['id']}")
         click.echo(f"Prompt: {run_data.get('user_prompt')}")
         click.echo(f"Details: {run_data['strategy']} strategy, {run_data['judging_method']} judging")

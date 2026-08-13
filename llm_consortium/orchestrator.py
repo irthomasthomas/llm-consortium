@@ -2,8 +2,6 @@ import concurrent.futures
 import logging
 import re
 import uuid
-import json
-import time
 import pathlib
 from typing import List, Dict, Any, Optional
 
@@ -42,6 +40,9 @@ def _read_arbiter_prompt() -> str:
 
 def _read_iteration_prompt() -> str:
     return _read_prompt_file("iteration_prompt.xml")
+
+def _read_rank_cot_prompt() -> str:
+    return _read_prompt_file("rank_cot_prompt.xml")
 
 class IterationContext:
     def __init__(self, synthesis: Dict[str, Any], model_responses: List[Dict[str, Any]]):

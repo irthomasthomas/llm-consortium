@@ -4,7 +4,6 @@ Ring+Ling Strategy: Two-stage reasoning pipeline.
   Iteration 2: Answer model uses reasoning as context
 """
 import re, logging
-from typing import List, Dict, Any
 from .base import ConsortiumStrategy
 
 logger = logging.getLogger(__name__)

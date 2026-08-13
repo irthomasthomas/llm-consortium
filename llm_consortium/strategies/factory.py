@@ -132,8 +132,8 @@ def create_strategy(strategy_name: Optional[str], orchestrator: 'ConsortiumOrche
         # Provide helpful error message for semantic strategy
         if normalized_name == "semantic" and not SEMANTIC_AVAILABLE:
             raise ValueError(
-                f"The 'semantic' strategy requires optional dependencies. "
-                f"Install with: pip install llm-consortium[embeddings]"
+                "The 'semantic' strategy requires optional dependencies. "
+                "Install with: pip install llm-consortium[embeddings]"
             )
         
         logger.error(f"Unknown strategy requested: '{normalized_name}'. Available: {available}")

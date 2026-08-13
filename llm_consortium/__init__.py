@@ -53,7 +53,6 @@ from .orchestrator import ConsortiumOrchestrator, IterationContext
 
 # Import CLI and model registration hooks for llm
 from .cli import register_commands
-import llm
 import json
 import logging
 

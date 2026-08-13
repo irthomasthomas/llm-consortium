@@ -3,14 +3,13 @@ Semantic Clustering Strategy for LLM Consortium.
 Uses sklearn for clustering if available, otherwise provides a helpful error.
 """
 import logging
-import json
 from collections import Counter
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 import numpy as np
 
-from ..db import save_cluster_metadata, save_response_embedding, DatabaseConnection
-from ..geometry import TropicalConsensus, _cosine_distance
+from ..db import save_cluster_metadata, save_response_embedding
+from ..geometry import _cosine_distance
 from .base import ConsortiumStrategy
 
 logger = logging.getLogger(__name__)
@@ -27,7 +26,8 @@ class SemanticClusteringStrategy(ConsortiumStrategy):
     def _check_dependencies(self):
         """Check if sklearn is available when the strategy is used."""
         try:
-            from sklearn.cluster import DBSCAN  # noqa: F401
+            import importlib.util
+            assert importlib.util.find_spec("sklearn") is not None
             self._sklearn_available = True
         except ImportError:
             self._sklearn_available = False
