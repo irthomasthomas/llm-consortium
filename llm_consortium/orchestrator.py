@@ -172,10 +172,17 @@ class ConsortiumOrchestrator:
             context = IterationContext(synthesis=synthesis_result, model_responses=model_responses)
             self.strategy.update_state(context)
             
+            # Check convergence: break if arbiter is confident and not requesting iteration
+            # Unless synthesis was deferred (skip_intermediate_synthesis mode)
+            synth_text = synthesis_result.get('synthesis', '')
+            is_deferred = synth_text in ('', '[DEFERRED]')
             if not synthesis_result.get('needs_iteration', False) and iteration >= self.minimum_iterations:
                 if synthesis_result.get('confidence', 0) >= self.confidence_threshold:
-                    logger.info(f"Conversation converged at iteration {iteration} with confidence {synthesis_result.get('confidence')}")
-                    break
+                    if is_deferred and iteration < self.max_iterations:
+                        logger.info(f"Arbiter confident but synthesis deferred at iteration {iteration}, continuing for final synthesis")
+                    else:
+                        logger.info(f"Conversation converged at iteration {iteration} with confidence {synthesis_result.get('confidence')}")
+                        break
         
         synthesis_dict = self.iteration_history[-1].get("synthesis", {}) if self.iteration_history else {}
         final_result = {
@@ -353,10 +360,17 @@ class ConsortiumOrchestrator:
             context = IterationContext(synthesis=synthesis_result, model_responses=responses)
             self.strategy.update_state(context)
             
+            # Check convergence: break if arbiter is confident and not requesting iteration
+            # Unless synthesis was deferred (skip_intermediate_synthesis mode)
+            synth_text = synthesis_result.get('synthesis', '')
+            is_deferred = synth_text in ('', '[DEFERRED]')
             if not synthesis_result.get('needs_iteration', False) and iteration >= self.minimum_iterations:
                 if synthesis_result.get('confidence', 0) >= self.confidence_threshold:
-                    logger.info(f"Conversation converged at iteration {iteration} with confidence {synthesis_result.get('confidence')}")
-                    break
+                    if is_deferred and iteration < self.max_iterations:
+                        logger.info(f"Arbiter confident but synthesis deferred at iteration {iteration}, continuing for final synthesis")
+                    else:
+                        logger.info(f"Conversation converged at iteration {iteration} with confidence {synthesis_result.get('confidence')}")
+                        break
 
         synthesis_dict = self.iteration_history[-1].get("synthesis", {}) if self.iteration_history else {}
         final_result = {
@@ -481,7 +495,7 @@ class ConsortiumOrchestrator:
                   "centroid_vector": None,
              }
 
-        arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history)
+        arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history, iteration=iteration)
         arbiter_model = llm.get_model(self.arbiter)
         
         arbiter_system = getattr(self.strategy, 'get_arbiter_system_prompt', None)
@@ -496,6 +510,8 @@ class ConsortiumOrchestrator:
         try:
             if self.judging_method == 'rank':
                 parsed_result = self._parse_rank_response(raw_arbiter_text, responses)
+            elif self.judging_method == 'rank-cot':
+                parsed_result = self._parse_rank_cot_response(raw_arbiter_text, responses)
             else:
                 parsed_result = self._parse_arbiter_response(raw_arbiter_text, responses=responses)
             
@@ -546,7 +562,7 @@ class ConsortiumOrchestrator:
         if arbiter_conversation is None:
             arbiter_conversation = arbiter_model.conversation()
         
-        arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history)
+        arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history, iteration=iteration)
         
         arbiter_system = getattr(self.strategy, 'get_arbiter_system_prompt', None)
         sys_prompt = arbiter_system() if callable(arbiter_system) else None
@@ -560,6 +576,8 @@ class ConsortiumOrchestrator:
         try:
             if self.judging_method == 'rank':
                 parsed_result = self._parse_rank_response(raw_arbiter_text, valid_responses)
+            elif self.judging_method == 'rank-cot':
+                parsed_result = self._parse_rank_cot_response(raw_arbiter_text, valid_responses)
             else:
                 parsed_result = self._parse_arbiter_response(raw_arbiter_text, responses=valid_responses)
             
@@ -606,56 +624,187 @@ class ConsortiumOrchestrator:
         return parsed_result
 
     def _prepare_arbiter_prompt(self, prompt: str, responses: List[Dict[str, Any]], 
-                               history: List[Dict[str, Any]]) -> str:
+                               history: List[Dict[str, Any]], iteration: int = 1) -> str:
         formatted_responses = ""
         for i, r in enumerate(responses):
             rid = r.get("id", i)
             model_name = r.get("model", "unknown")
             response_text = r.get("response", "")
-            formatted_responses += f"--- RESPONSE {rid} (Model: {model_name}) ---\\n"
-            formatted_responses += response_text + "\\n\\n"
+            formatted_responses += f"--- RESPONSE {rid} (Model: {model_name}) ---\n"
+            formatted_responses += response_text + "\n\n"
 
         formatted_history = ""
         for item in history:
             itr = item.get("iteration", "?")
             prev_synthesis = item.get("synthesis", {}).get("synthesis", "")
-            formatted_history += f"Iteration {itr} synthesis:\\n"
-            formatted_history += prev_synthesis + "\\n\\n"
+            formatted_history += f"Iteration {itr} synthesis:\n"
+            formatted_history += prev_synthesis + "\n\n"
 
-        template = _read_arbiter_prompt()
+        # Determine if this is a forced-final iteration (last allowed iteration)
+        is_final_iteration = iteration >= getattr(self, "max_iterations", 3)
+
+        # Determine if we should skip synthesis for this intermediate iteration
+        skip_synthesis = (
+            getattr(getattr(self, 'config', None), 'skip_intermediate_synthesis', False)
+            and not is_final_iteration
+        )
+
+        # --- Select the appropriate prompt template ---
+        if getattr(self, 'judging_method', 'default') == 'rank-cot':
+            template = _read_rank_cot_prompt()
+            if not template:
+                template = _read_arbiter_prompt()
+        else:
+            template = _read_arbiter_prompt()
+
         if not template:
-            template = "Original prompt: {original_prompt}\\nModel responses:\\n{formatted_responses}\\nIteration history:\\n{formatted_history}\\nAnalyze the responses and provide a synthesis."
+            template = "Original prompt: {original_prompt}\nModel responses:\n{formatted_responses}\nIteration history:\n{formatted_history}\nAnalyze the responses and provide a synthesis."
 
         # CacheMax: static prefix first (identical to member/iteration prompt prefix
         # and to the pre-warm request), dynamic responses LAST. This maximizes
         # prefix-cache hits for same-model arbiters and for pre-warmed arbiters.
-        if getattr(self.strategy, 'arbiter_shared_prefix', False):
+        if getattr(self.strategy, 'arbiter_shared_prefix', False) and getattr(self, 'judging_method', 'default') != 'rank-cot':
             static_prefix = self.strategy.get_arbiter_prefix(prompt)
-            dynamic_suffix = (
-                "\\n\\n<model_responses>\\n"
-                + formatted_responses
-                + "\\n</model_responses>\\n\\n<iteration_history>\\n"
-                + formatted_history
-                + "\\n</iteration_history>\\n\\n"
-                + "Analyze the responses, then reply in EXACTLY this format:\n\n"
-                + "<synthesis_output>\n"
-                + "<analysis>[How you arrived at the synthesis]</analysis>\n"
-                + "<dissent>[Notable dissenting views, if any]</dissent>\n"
-                + "<synthesis>[Comprehensive synthesized answer; no meta-analysis]</synthesis>\n"
-                + "<confidence>[0.0-1.0]</confidence>\n"
-                + "<refinement_areas>[Areas needing refinement, if any]</refinement_areas>\n"
-                + "<needs_iteration>[true|false]</needs_iteration>\n"
-                + "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
-                + "</synthesis_output>"
-            )
+            if skip_synthesis:
+                dynamic_suffix = self._build_skip_synthesis_suffix(
+                    formatted_responses, formatted_history, responses
+                )
+            else:
+                dynamic_suffix = (
+                    "\n\n<model_responses>\n"
+                    + formatted_responses
+                    + "\n</model_responses>\n\n<iteration_history>\n"
+                    + formatted_history
+                    + "\n</iteration_history>\n\n"
+                    + "Analyze the responses, then reply in EXACTLY this format:\n\n"
+                    + "<synthesis_output>\n"
+                    + "<analysis>[How you arrived at the synthesis]</analysis>\n"
+                    + "<dissent>[Notable dissenting views, if any]</dissent>\n"
+                    + "<synthesis>[Comprehensive synthesized answer; no meta-analysis]</synthesis>\n"
+                    + "<confidence>[0.0-1.0]</confidence>\n"
+                    + "<refinement_areas>[Areas needing refinement, if any]</refinement_areas>\n"
+                    + "<needs_iteration>[true|false]</needs_iteration>\n"
+                    + "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
+                    + "</synthesis_output>"
+                )
             return static_prefix + dynamic_suffix
 
-        return template.format(
+        # Build the formatted prompt
+        formatted_prompt = template.format(
             original_prompt=prompt,
             formatted_responses=formatted_responses,
             formatted_history=formatted_history,
             user_instructions=self.system_prompt or ""
         )
+
+        # Inject skip-synthesis instructions if applicable
+        if skip_synthesis:
+            skip_instruction = self._build_skip_synthesis_instruction(responses)
+            formatted_prompt += "\n\n" + skip_instruction
+
+        return formatted_prompt
+
+    def _build_skip_synthesis_instruction(self, responses: List[Dict[str, Any]]) -> str:
+        """Build the instruction block telling the arbiter to skip synthesis and provide evaluation + guidance."""
+        per_model = getattr(self.config, 'per_model_guidance', True)
+
+        guidance_hint = ""
+        if per_model:
+            guidance_hint = """
+For each model, provide specific, actionable guidance in the <model_guidance> section.
+Format: <guidance model="ModelName" instance="0">[specific feedback]</guidance>"""
+
+        return f"""**IMPORTANT - INTERMEDIATE EVALUATION MODE:**
+This is an intermediate iteration. Do NOT produce a full <synthesis>.
+Instead, focus on:
+1. Evaluating each response against the criteria.
+2. Providing specific guidance for how each model should improve.
+3. Set <needs_iteration>true</needs_iteration> if improvement is needed.
+4. Leave <synthesis> empty or write only "[DEFERRED]".
+5. You may still set <needs_iteration>false</needs_iteration> with a synthesis if you are already confident.{guidance_hint}"""
+
+    def _build_skip_synthesis_suffix(self, formatted_responses: str, formatted_history: str,
+                                     responses: List[Dict[str, Any]]) -> str:
+        """Build the CacheMax-style suffix for skip-synthesis mode."""
+        suffix = (
+            "\n\n<model_responses>\n"
+            + formatted_responses
+            + "\n</model_responses>\n\n<iteration_history>\n"
+            + formatted_history
+            + "\n</iteration_history>\n\n"
+        )
+        if getattr(self.config, 'per_model_guidance', True):
+            suffix += (
+                "This is an INTERMEDIATE iteration. Evaluate the responses and provide per-model guidance.\n"
+                "Reply in EXACTLY this format:\n\n"
+                "<synthesis_output>\n"
+                "<analysis>[Evaluation of each response]</analysis>\n"
+                "<dissent>[Notable dissenting views]</dissent>\n"
+                "<synthesis>[DEFERRED]</synthesis>\n"
+                "<confidence>[0.0-1.0]</confidence>\n"
+                "<refinement_areas>[Areas needing refinement]</refinement_areas>\n"
+                "<needs_iteration>true</needs_iteration>\n"
+                "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
+                "<model_guidance>[<guidance model=\"Name\" instance=\"0\">feedback</guidance>]</model_guidance>\n"
+                "</synthesis_output>"
+            )
+        else:
+            suffix += (
+                "This is an INTERMEDIATE iteration. Evaluate and provide guidance.\n"
+                "Reply in EXACTLY this format:\n\n"
+                "<synthesis_output>\n"
+                "<analysis>[Evaluation]</analysis>\n"
+                "<dissent>[Dissenting views]</dissent>\n"
+                "<synthesis>[DEFERRED]</synthesis>\n"
+                "<confidence>[0.0-1.0]</confidence>\n"
+                "<refinement_areas>[Refinement areas]</refinement_areas>\n"
+                "<needs_iteration>true</needs_iteration>\n"
+                "</synthesis_output>"
+            )
+        return suffix
+
+    def _parse_model_guidance(self, text: str) -> Dict[str, str]:
+        """Parse <model_guidance> section into a dict keyed by 'model_instance'."""
+        guidance = {}
+        mg_match = re.search(r"<model_guidance>([\s\S]*?)</model_guidance>", text, re.IGNORECASE | re.DOTALL)
+        if not mg_match:
+            return guidance
+        
+        mg_content = mg_match.group(1)
+        # Parse <guidance model="Name" instance="0">text</guidance>
+        for m in re.finditer(r'<guidance\s+model="([^"]+)"\s+instance="(\d+)"\s*>([\s\S]*?)</guidance>', 
+                             mg_content, re.IGNORECASE | re.DOTALL):
+            model_name = m.group(1).strip()
+            instance = m.group(2).strip()
+            feedback = m.group(3).strip()
+            guidance[f"{model_name}_{instance}"] = feedback
+        
+        # Also support simpler <guidance model="Name">text</guidance> without instance
+        if not guidance:
+            for m in re.finditer(r'<guidance\s+model="([^"]+)"\s*>([\s\S]*?)</guidance>',
+                                 mg_content, re.IGNORECASE | re.DOTALL):
+                model_name = m.group(1).strip()
+                feedback = m.group(2).strip()
+                guidance[f"{model_name}_0"] = feedback
+        
+        return guidance
+
+    def _parse_rank_cot_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Parse a rank-cot arbiter response. Similar to default but with evaluation and model guidance."""
+        # Start with the standard parse
+        result = self._parse_arbiter_response(text, responses=responses)
+        
+        # Parse evaluation section
+        eval_match = re.search(r"<evaluation>([\s\S]*?)</evaluation>", text, re.IGNORECASE | re.DOTALL)
+        if eval_match:
+            result["evaluation"] = eval_match.group(1).strip()
+        else:
+            result["evaluation"] = ""
+        
+        # Parse per-model guidance
+        result["model_guidance"] = self._parse_model_guidance(text)
+        
+        return result
 
     def _parse_arbiter_response(self, text: str, is_final_iteration: bool = False, responses: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
         sections = {
@@ -707,6 +856,9 @@ class ConsortiumOrchestrator:
                 else:
                     result[key] = extracted_text
 
+        # Parse per-model guidance if present
+        result["model_guidance"] = self._parse_model_guidance(text)
+
         return result
 
     def _parse_rank_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
@@ -740,7 +892,9 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
                      strategy: str = "default", strategy_params: Optional[Dict[str, Any]] = None,
                      config_name: Optional[str] = None,
                      embedding_backend: Optional[str] = None,
-                     embedding_model: Optional[str] = None) -> ConsortiumOrchestrator:
+                     embedding_model: Optional[str] = None,
+                     skip_intermediate_synthesis: bool = False,
+                     per_model_guidance: bool = True) -> ConsortiumOrchestrator:
     
     from .models import parse_models
     
@@ -760,6 +914,8 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
         strategy=strategy,
         strategy_params=strategy_params,
         embedding_backend=embedding_backend,
-        embedding_model=embedding_model
+        embedding_model=embedding_model,
+        skip_intermediate_synthesis=skip_intermediate_synthesis,
+        per_model_guidance=per_model_guidance
     )
     return ConsortiumOrchestrator(config, config_name=config_name)

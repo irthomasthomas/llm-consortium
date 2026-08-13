@@ -67,6 +67,11 @@ After your thought process, provide your synthesized output using the following 
     <ranking>
         [Rank all responses from best to worst by their ID. Format: <rank position="1">ID</rank>, <rank position="2">ID</rank>, etc.]
     </ranking>
+
+    <model_guidance>
+        [OPTIONAL: If needs_iteration is true, provide specific actionable feedback for each model on how to improve.
+        Format: <guidance model="ModelName" instance="0">[feedback]</guidance>]
+    </model_guidance>
 </synthesis_output>
 
 Remember to maintain objectivity and consider all perspectives fairly in your analysis and synthesis. 

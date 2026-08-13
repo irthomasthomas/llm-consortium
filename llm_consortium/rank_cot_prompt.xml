@@ -1,0 +1,84 @@
+<rank_cot_prompt>
+    <user_instructions>{user_instructions}</user_instructions>
+    <original_prompt>{original_prompt}</original_prompt>
+    <model_responses>
+        {formatted_responses}
+    </model_responses>
+    <iteration_history>
+        {formatted_history}
+    </iteration_history>
+</rank_cot_prompt>
+
+**Task:** Evaluate and rank the candidate responses using chain-of-thought reasoning.
+
+**Goal:** Identify the single best response through rigorous evaluation, then provide guidance for improving weaker responses. Give higher rank to answers that are *accurate, truthful, well-reasoned, and grounded in the information actually provided*.
+
+**Evaluation Criteria (apply in the order listed):**
+
+1. **Truthfulness / Reality Grounding** – Does the answer present only facts present in the prompt or in verified knowledge? Does it acknowledge missing information instead of fabricating it?
+2. **Accuracy** – Are claims, figures, and reasoning correct? Are invented details avoided?
+3. **Context Grounding** – Does the answer stay on-topic and address the user's actual request?
+4. **Depth of Reasoning** – Does the response show clear, logical step-by-step thinking? Are edge cases considered?
+5. **Completeness** – Does it address all aspects of the original prompt?
+6. **Evidence & Explanation** – Are arguments supported with real evidence or clearly labeled speculation?
+
+**Instructions:**
+
+1. For each response, write a brief evaluation noting strengths and weaknesses against each criterion.
+2. Rank all responses from best (rank 1) to worst (rank N).
+3. If iterations remain, provide specific actionable guidance for each model on how to improve.
+4. When a response invents details not provided, treat it as a serious violation of criteria 1-2.
+
+After your evaluation, provide your output using the following format:
+
+<synthesis_output>
+    <evaluation>
+        <response id="ID1">
+            <strengths>[Key strengths of this response]</strengths>
+            <weaknesses>[Weaknesses or errors]</weaknesses>
+        </response>
+        <response id="ID2">
+            <strengths>[Key strengths]</strengths>
+            <weaknesses>[Weaknesses or errors]</weaknesses>
+        </response>
+    </evaluation>
+
+    <analysis>
+        [A concise summary explaining why you ranked the responses this way and your overall confidence.]
+    </analysis>
+
+    <dissent>
+        [Any notable alternative perspectives or dissenting views worth considering.]
+    </dissent>
+
+    <synthesis>
+        [The full text of the top-ranked response. This is the consortium's answer.]
+        [IMPORTANT: This should resemble a normal LLM chat response. No meta-analysis.]
+    </synthesis>
+
+    <confidence>
+        [Your confidence in the top-ranked response, as a decimal between 0 and 1.]
+    </confidence>
+
+    <refinement_areas>
+        [If needs_iteration is true, provide specific areas that require further refinement.]
+    </refinement_areas>
+
+    <needs_iteration>
+        [true if further iteration could improve the responses, false if the top-ranked response is sufficient.]
+    </needs_iteration>
+
+    <ranking>
+        <rank position="1">ID</rank>
+        <rank position="2">ID</rank>
+    </ranking>
+
+    <model_guidance>
+        <guidance model="ModelName" instance="0">
+            [Specific, actionable feedback for this model on how to improve its response in the next iteration.]
+        </guidance>
+    </model_guidance>
+</synthesis_output>
+
+Remember: The focus should be on raw intelligence, literary quality, and correctness of the response.
+If one response is significantly better than the others, it is acceptable to select that response directly.

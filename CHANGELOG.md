@@ -37,3 +37,22 @@ Release 2026.03.06 (Version 0.8.0)
   - Fixed run summary persistence so `iteration_count` and `final_confidence` are updated after orchestration.
   - Validation status: full test suite passing locally; live Chutes embedding smoke test successful; real provider-backed answer-quality demonstration pending further evaluation.
 
+
+## [Unreleased] - Enhanced Judge Modes
+
+### Added
+- **`rank-cot` judging method**: Combines ranking with chain-of-thought evaluation. The arbiter evaluates each response against structured criteria (truthfulness, accuracy, depth, completeness), provides per-model guidance, and selects the best response.
+- **`skip_intermediate_synthesis`**: When enabled, the arbiter skips full synthesis during intermediate iterations and instead provides evaluation + per-model guidance. This saves tokens and focuses on improvement. A full synthesis is produced on the final iteration or when the arbiter is confident.
+- **Per-model guidance**: The arbiter can now generate specific, actionable feedback for each consortium member model, which is fed back via the strategy's `prepare_iteration_prompt` in subsequent iterations.
+- **`--no-per-model-guidance` CLI flag**: Disables per-model guidance when using skip-intermediate-synthesis (uses shared guidance instead).
+
+### Changed
+- `_prepare_arbiter_prompt` now accepts an `iteration` parameter to determine if this is a forced-final iteration.
+- Iteration loops check for deferred synthesis (`[DEFERRED]`) and force one more iteration if needed.
+- `arbiter_prompt.xml` includes optional `<model_guidance>` output section.
+- Default strategy's `prepare_iteration_prompt` now uses per-model guidance when available.
+- `ConsortiumConfig` normalizes `judging_method` to preserve dashes (e.g., `rank-cot`).
+
+### New Files
+- `llm_consortium/rank_cot_prompt.xml` - Prompt template for chain-of-thought ranking evaluation.
+- `tests/test_enhanced_judge_modes.py` - 20 tests covering rank-cot parsing, model guidance parsing, skip-synthesis config, and normalization.

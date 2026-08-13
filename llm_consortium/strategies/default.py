@@ -33,15 +33,40 @@ class DefaultStrategy(ConsortiumStrategy):
         """
         Implements a cache-optimized prompt structure for subsequent iterations.
         Places the long, static original prompt BEFORE the dynamic iteration history.
+        Uses per-model guidance when available (from skip_intermediate_synthesis mode).
         """
         if not self.orchestrator.iteration_history:
              return original_prompt
              
-        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
-        
-        guidance = f"""Iteration Guidance:
+        last_iteration = self.orchestrator.iteration_history[-1]
+        synthesis_data = last_iteration.get("synthesis", {})
+        prev_synth = synthesis_data.get("synthesis", "")
+
+        # Check for per-model guidance (from rank-cot or skip_intermediate_synthesis)
+        model_guidance = synthesis_data.get("model_guidance", {})
+        guidance_key = f"{model_id}_{instance}"
+        specific_guidance = model_guidance.get(guidance_key) or model_guidance.get(f"{model_id}_0", "")
+
+        if specific_guidance:
+            # Use per-model guidance as the primary feedback
+            guidance = f"""Iteration Guidance:
+Your specific feedback for improvement:
+{specific_guidance}
+
+Previous synthesis (for reference):
+{prev_synth if prev_synth and prev_synth != '[DEFERRED]' else '[No synthesis was produced in the previous round - focus on the feedback above.]'}"""
+        else:
+            # Fallback: use synthesis-based guidance
+            refinement_areas = synthesis_data.get("refinement_areas", [])
+            refinement_text = ""
+            if refinement_areas:
+                refinement_text = "\nFocus particularly on these refinement areas:\n"
+                for area in refinement_areas:
+                    refinement_text += f"- {area}\n"
+
+            guidance = f"""Iteration Guidance:
 Please improve upon the previous iteration based on this synthesis:
-{prev_synth}"""
+{prev_synth}{refinement_text}"""
 
         if getattr(self.orchestrator, 'manual_context', False):
             # Cache-optimized layout: Static content first, dynamic content last
