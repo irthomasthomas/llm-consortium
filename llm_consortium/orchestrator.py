@@ -41,6 +41,18 @@ def _read_arbiter_prompt() -> str:
 def _read_iteration_prompt() -> str:
     return _read_prompt_file("iteration_prompt.xml")
 
+def _read_rank_prompt() -> str:
+    return _read_prompt_file("rank_prompt.xml")
+
+def _read_arbiter_system_prompt() -> str:
+    return _read_prompt_file("arbiter_system.xml")
+
+def _read_rank_system_prompt() -> str:
+    return _read_prompt_file("rank_system.xml")
+
+def _read_rank_cot_system_prompt() -> str:
+    return _read_prompt_file("rank_cot_system.xml")
+
 def _read_rank_cot_prompt() -> str:
     return _read_prompt_file("rank_cot_prompt.xml")
 
@@ -62,6 +74,13 @@ class ConsortiumOrchestrator:
         self.judging_method = config.judging_method
         self.strategy = create_strategy(config.strategy, self, config.strategy_params)
         self.manual_context = config.manual_context
+        # Arbiter instructions are delivered via the system channel (one stable
+        # contract per run) unless disabled for judges without a system role.
+        self.arbiter_system_enabled = (config.strategy_params or {}).get("arbiter_system_prompt", True)
+        self.arbiter_system_prompt = (
+            self._load_arbiter_system_prompt(self.judging_method)
+            if self.arbiter_system_enabled else None
+        )
         self.iteration_history = []
         self._conversation_history = ""
         self.consortium_id = None
@@ -481,6 +500,24 @@ class ConsortiumOrchestrator:
         """Check if any model has more than 1 instance configured."""
         return any(count > 1 for count in models.values())
 
+    @staticmethod
+    def _load_arbiter_system_prompt(judging_method: str) -> str:
+        """Load the judge instructions for the configured judging method."""
+        if judging_method == "rank":
+            return _read_rank_system_prompt() or _read_arbiter_system_prompt()
+        if judging_method == "rank-cot":
+            return _read_rank_cot_system_prompt() or _read_arbiter_system_prompt()
+        return _read_arbiter_system_prompt()
+
+    def _resolve_arbiter_sys_prompt(self) -> Optional[str]:
+        """System prompt for the arbiter call: strategy hook override (e.g.
+        cache_max serves the member system prompt for byte-identical prefix
+        caching) or the file-based arbiter instructions."""
+        hook = getattr(self.strategy, "get_arbiter_system_prompt", None)
+        if callable(hook):
+            return hook(default=self.arbiter_system_prompt)
+        return self.arbiter_system_prompt
+
     def _synthesize_responses_manual(self, prompt: str, responses: List[Dict[str, Any]], 
                                    history: List[Dict[str, Any]], iteration: int) -> Dict[str, Any]:
         if not self.arbiter:
@@ -499,8 +536,7 @@ class ConsortiumOrchestrator:
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history, iteration=iteration)
         arbiter_model = llm.get_model(self.arbiter)
         
-        arbiter_system = getattr(self.strategy, 'get_arbiter_system_prompt', None)
-        sys_prompt = arbiter_system() if callable(arbiter_system) else None
+        sys_prompt = self._resolve_arbiter_sys_prompt()
         response = arbiter_model.prompt(arbiter_prompt, system=sys_prompt, stream=False)
         raw_arbiter_text = response.text()
         log_response(response, self.arbiter, self.consortium_id)
@@ -565,8 +601,7 @@ class ConsortiumOrchestrator:
         
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history, iteration=iteration)
         
-        arbiter_system = getattr(self.strategy, 'get_arbiter_system_prompt', None)
-        sys_prompt = arbiter_system() if callable(arbiter_system) else None
+        sys_prompt = self._resolve_arbiter_sys_prompt()
         arbiter_response = arbiter_conversation.prompt(arbiter_prompt, system=sys_prompt, stream=False)
         raw_arbiter_text = arbiter_response.text()
         log_response(arbiter_response, self.arbiter, self.consortium_id)
@@ -650,11 +685,13 @@ class ConsortiumOrchestrator:
             and not is_final_iteration
         )
 
-        # --- Select the appropriate prompt template ---
-        if getattr(self, 'judging_method', 'default') == 'rank-cot':
-            template = _read_rank_cot_prompt()
-            if not template:
-                template = _read_arbiter_prompt()
+        # --- Select the appropriate prompt template (data only; judge
+        # instructions live in the system prompt, see _resolve_arbiter_sys_prompt) ---
+        jm = getattr(self, 'judging_method', 'default')
+        if jm == 'rank-cot':
+            template = _read_rank_cot_prompt() or _read_arbiter_prompt()
+        elif jm == 'rank':
+            template = _read_rank_prompt() or _read_arbiter_prompt()
         else:
             template = _read_arbiter_prompt()
 
@@ -677,17 +714,22 @@ class ConsortiumOrchestrator:
                     + "\n</model_responses>\n\n<iteration_history>\n"
                     + formatted_history
                     + "\n</iteration_history>\n\n"
-                    + "Analyze the responses, then reply in EXACTLY this format:\n\n"
-                    + "<synthesis_output>\n"
-                    + "<analysis>[How you arrived at the synthesis]</analysis>\n"
-                    + "<dissent>[Notable dissenting views, if any]</dissent>\n"
-                    + "<synthesis>[Comprehensive synthesized answer; no meta-analysis]</synthesis>\n"
-                    + "<confidence>[0.0-1.0]</confidence>\n"
-                    + "<refinement_areas>[Areas needing refinement, if any]</refinement_areas>\n"
-                    + "<needs_iteration>[true|false]</needs_iteration>\n"
-                    + "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
-                    + "</synthesis_output>"
                 )
+                if getattr(self, "arbiter_system_enabled", True):
+                    dynamic_suffix += "Analyze the responses and provide your synthesized output."
+                else:
+                    dynamic_suffix += (
+                        "Analyze the responses, then reply in EXACTLY this format:\n\n"
+                        + "<synthesis_output>\n"
+                        + "<analysis>[How you arrived at the synthesis]</analysis>\n"
+                        + "<dissent>[Notable dissenting views, if any]</dissent>\n"
+                        + "<synthesis>[Comprehensive synthesized answer; no meta-analysis]</synthesis>\n"
+                        + "<confidence>[0.0-1.0]</confidence>\n"
+                        + "<refinement_areas>[Areas needing refinement, if any]</refinement_areas>\n"
+                        + "<needs_iteration>[true|false]</needs_iteration>\n"
+                        + "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
+                        + "</synthesis_output>"
+                    )
             return static_prefix + dynamic_suffix
 
         # Build the formatted prompt
@@ -702,6 +744,13 @@ class ConsortiumOrchestrator:
         if skip_synthesis:
             skip_instruction = self._build_skip_synthesis_instruction(responses)
             formatted_prompt += "\n\n" + skip_instruction
+
+        # Legacy inline mode (arbiter_system_prompt disabled): deliver judge
+        # instructions in the user turn like the pre-split templates did.
+        if not getattr(self, "arbiter_system_enabled", True):
+            legacy_instructions = self._load_arbiter_system_prompt(getattr(self, 'judging_method', 'default'))
+            if legacy_instructions:
+                formatted_prompt += "\n\n" + legacy_instructions
 
         return formatted_prompt
 

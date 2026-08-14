@@ -76,8 +76,19 @@ Improve upon the previous iteration based on this synthesis:
     def get_arbiter_prefix(self, original_prompt: str) -> str:
         return ARBITER_STATIC_PREFIX.format(original_prompt=original_prompt)
 
-    def get_arbiter_system_prompt(self) -> Optional[str]:
-        return self.orchestrator.system_prompt
+    def get_arbiter_system_prompt(self, default: Optional[str] = None) -> Optional[str]:
+        """Arbiter system = member system prompt + arbiter instructions appended
+        AFTER it, so the shared member prefix stays a byte-identical cache
+        prefix and the judge contract gets recency at the end of the system
+        channel. Members keep `orchestrator.system_prompt` unchanged, so
+        prefix caching still hits the entire shared member portion and only
+        the arbiter-only instruction suffix is a cache miss."""
+        member_sys = self.orchestrator.system_prompt
+        if not default:
+            return member_sys
+        if not member_sys:
+            return default
+        return member_sys + "\n\n" + default
 
     def should_prewarm(self, arbiter_model: str, member_models: List[str]) -> bool:
         if not self.prewarm_arbiter:
@@ -125,7 +136,12 @@ Improve upon the previous iteration based on this synthesis:
     def _execute_prewarm(self, arbiter_model: str, original_prompt: str):
         """Un guarded execution; callers must have claimed the slot first."""
         prefix = self.get_arbiter_prefix(original_prompt)
-        system = self.get_arbiter_system_prompt()
+        # Mirror the real arbiter call's system composition so the pre-warm
+        # prefix is byte-identical to the eventual arbiter request.
+        arbiter_default = getattr(self.orchestrator, "arbiter_system_prompt", None)
+        if not isinstance(arbiter_default, str):
+            arbiter_default = None
+        system = self.get_arbiter_system_prompt(default=arbiter_default)
         start = time.time()
         try:
             import llm

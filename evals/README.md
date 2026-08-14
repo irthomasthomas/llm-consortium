@@ -55,3 +55,21 @@ python evals/analyze_results.py \
 - **Geometric Confidence Delta**: Measures how much semantic filtering "tightened" the consensus space compared to the raw outputs.
 - **Disagreement Frequency**: The percentage of runs where the models produced multiple semantic clusters (indicating a non-trivial consensus was required).
 - **Win Rate**: The percentage of times the semantic strategy was judged superior to the default strategy.
+
+## replay_arbiter.py
+
+Replays **recorded production arbiter prompts** (mined from the llm logs DB at
+`~/.config/io.datasette.llm/logs.db`) through both delivery modes against
+live models:
+
+```
+python evals/replay_arbiter.py "glm-5.2-nim,ling-3.0-flash" <n_failing> <n_passing> <max_prompt_chars>
+```
+
+- `inline` mode sends the recorded legacy prompt verbatim (data + trailing instructions).
+- `system` mode splits at the `</arbiter_prompt>` seam: data in the user turn, instructions in `system=`.
+- Cases are selected from historically failing (`<confidence>` missing) and passing arbiter calls; score uses the parser's exact `<confidence>` regex.
+
+Motivation: synthetic local rigs have no failure headroom; replaying real
+recorded failures directly validates whether the system-channel split repairs
+observed production failures.

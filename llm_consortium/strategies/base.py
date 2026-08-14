@@ -121,6 +121,24 @@ class ConsortiumStrategy(ABC):
         """
         return default_prompt
 
+    def get_arbiter_system_prompt(self, default: Optional[str] = None) -> Optional[str]:
+        """
+        **OPTIONAL:** Override the system prompt delivered to the arbiter.
+
+        Args:
+            default: The arbiter judge instructions resolved by the orchestrator
+                     from the system template files (arbiter_system.xml /
+                     rank_system.xml / rank_cot_system.xml), or None when the
+                     arbiter system channel is disabled.
+
+        Returns:
+            The system prompt to send to the arbiter. The default
+            implementation passes `default` through unchanged. Strategies that
+            need byte-identical member/arbiter prefixes (e.g. cache_max) may
+            combine it with the shared member system prompt.
+        """
+        return default
+
     def prepare_iteration_prompt(self, model_id: str, instance: int, original_prompt: str, iteration: int) -> str:
         """
         **OPTIONAL:** Prepares the prompt for a subsequent iteration (iteration > 1).

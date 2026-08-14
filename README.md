@@ -146,6 +146,22 @@ The `--judging-method` option controls how the arbiter evaluates consortium memb
 | `rank` | Ranking — the arbiter ranks responses by quality and selects the best one as the consortium answer. Faster, no synthesis overhead. |
 | `rank-cot` | Chain-of-thought ranking — the arbiter evaluates each response against structured criteria (truthfulness, accuracy, reasoning depth, completeness), provides per-model guidance for improvement, and selects the best response. |
 
+### Arbiter instruction channel
+
+The arbiter's judge instructions and output contract are delivered via the
+`system=` channel (loaded from `arbiter_system.xml`, `rank_system.xml`, or
+`rank_cot_system.xml` depending on `--judging-method`); the user prompt sent
+to the arbiter is data-only (prompt + member responses + history). This keeps
+the output contract at the front of the arbiter's context instead of buried
+after large member-response payloads.
+
+**Compatibility kill-switch:** set `strategy_params: {"arbiter_system_prompt": false}`
+to restore the legacy behaviour where judge instructions are appended inline to
+the user prompt. Useful for arbiter backends that ignore or mangle system
+prompts. The `cache_max` strategy composes the arbiter instructions *after*
+the member system prompt so the shared prefix stays byte-identical for
+prefix-cache hits.
+
 ### Skip Intermediate Synthesis
 
 When `--skip-intermediate-synthesis` is enabled, the arbiter skips full synthesis during intermediate iterations. Instead, it:
