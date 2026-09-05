@@ -1,3 +1,4 @@
+import json
 import unittest
 from unittest.mock import patch, MagicMock, call
 import uuid
@@ -52,19 +53,15 @@ class TestConsortiumOrchestrator(unittest.TestCase):
     def test_synthesize_responses(self, mock_save_decision, mock_save_member, mock_log_response, mock_get_model):
         mock_arbiter = MagicMock()
         mock_response = MagicMock()
-        mock_response.text.return_value = """
-        <synthesis_output>
-            <synthesis>Synthesized response</synthesis>
-            <confidence>0.85</confidence>
-            <analysis>Analysis of responses</analysis>
-            <dissent>Dissenting views</dissent>
-            <needs_iteration>false</needs_iteration>
-            <refinement_areas>
-                <area>Area 1</area>
-                <area>Area 2</area>
-            </refinement_areas>
-        </synthesis_output>
-        """
+        mock_response.text.return_value = json.dumps({
+            "synthesis": "Synthesized response",
+            "confidence": 0.85,
+            "analysis": "Analysis of responses",
+            "dissent": "Dissenting views",
+            "needs_iteration": False,
+            "refinement_areas": ["Area 1", "Area 2"],
+            "ranking": [100, 200],
+        })
         mock_arbiter.prompt.return_value = mock_response
         mock_get_model.return_value = mock_arbiter
 

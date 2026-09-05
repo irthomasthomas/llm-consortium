@@ -49,13 +49,15 @@ def test_full_orchestration_cycle(mock_get_model, isolated_db):
     # Create dummy model for arbiter
     arbiter_response = MagicMock()
     arbiter_response.id = "response-arb-1"
-    # Provide a well-formed XML response that the arbiter would produce
-    arbiter_response.text.return_value = """
-<synthesis>The models agree that the earth is round.</synthesis>
-<confidence>0.95</confidence>
-<analysis>Both models provided consistent responses.</analysis>
-<needs_iteration>false</needs_iteration>
-    """
+    # Provide a well-formed JSON decision that the arbiter would produce
+    import json as _json
+    arbiter_response.text.return_value = _json.dumps({
+        "synthesis": "The models agree that the earth is round.",
+        "confidence": 0.95,
+        "analysis": "Both models provided consistent responses.",
+        "needs_iteration": False,
+        "ranking": [100, 200],
+    })
     mock_arbiter.prompt.return_value = arbiter_response
 
     # Configure mock_get_model to return the appropriate mock
@@ -111,3 +113,7 @@ def test_full_orchestration_cycle(mock_get_model, isolated_db):
     assert decisions[0]["run_id"] == run_id
     assert decisions[0]["iteration"] == 1
     assert decisions[0]["confidence"] == 0.95
+    assert decisions[0]["parse_success"] == 1
+
+    # Run status must be finalized (Fix B regression guard)
+    assert runs[0]["status"] == "success"

@@ -2,6 +2,7 @@
 Tests for enhanced judge modes: rank-cot parsing, per-model guidance,
 and skip_intermediate_synthesis logic.
 """
+import json
 import unittest
 from unittest.mock import MagicMock, patch
 from llm_consortium import ConsortiumOrchestrator, ConsortiumConfig
@@ -25,36 +26,21 @@ class TestRankCotParsing(unittest.TestCase):
         ]
 
     def test_parse_rank_cot_complete(self):
-        text = """
-        <synthesis_output>
-            <evaluation>
-                <response id="100">
-                    <strengths>Well-reasoned</strengths>
-                    <weaknesses>Missing edge case</weaknesses>
-                </response>
-                <response id="200">
-                    <strengths>Complete answer</strengths>
-                    <weaknesses>Verbose</weaknesses>
-                </response>
-            </evaluation>
-            <analysis>Model2 provided a more complete answer.</analysis>
-            <dissent>None significant.</dissent>
-            <synthesis>Answer 2</synthesis>
-            <confidence>0.85</confidence>
-            <refinement_areas>
-                <area>Edge cases</area>
-            </refinement_areas>
-            <needs_iteration>false</needs_iteration>
-            <ranking>
-                <rank position="1">200</rank>
-                <rank position="2">100</rank>
-            </ranking>
-            <model_guidance>
-                <guidance model="model1" instance="0">Consider edge cases next time.</guidance>
-                <guidance model="model2" instance="0">Good work, trim verbosity.</guidance>
-            </model_guidance>
-        </synthesis_output>
-        """
+        text = json.dumps({
+            "evaluation": [
+                {"id": 100, "strengths": "Well-reasoned", "weaknesses": "Missing edge case"},
+                {"id": 200, "strengths": "Complete answer", "weaknesses": "Verbose"},
+            ],
+            "analysis": "Model2 provided a more complete answer.",
+            "dissent": "None significant.",
+            "synthesis": "Answer 2",
+            "confidence": 0.85,
+            "refinement_areas": ["Edge cases"],
+            "needs_iteration": False,
+            "ranking": [200, 100],
+            "model_guidance": {"model1_0": "Consider edge cases next time.",
+                               "model2_0": "Good work, trim verbosity."},
+        })
         result = self.orchestrator._parse_rank_cot_response(text, self.responses)
 
         self.assertEqual(result["synthesis"], "Answer 2")
@@ -63,86 +49,36 @@ class TestRankCotParsing(unittest.TestCase):
         self.assertEqual(result["ranking"], [200, 100])
         self.assertEqual(result["chosen_response_id"], "r200")
         self.assertIn("evaluation", result)
-        self.assertIn("Well-reasoned", result["evaluation"])
+        self.assertTrue(any("Well-reasoned" in str(e.get("strengths", "")) for e in result["evaluation"]))
         self.assertIn("model_guidance", result)
         self.assertEqual(result["model_guidance"]["model1_0"], "Consider edge cases next time.")
         self.assertEqual(result["model_guidance"]["model2_0"], "Good work, trim verbosity.")
 
     def test_parse_rank_cot_missing_evaluation(self):
         """rank-cot should still work without evaluation section."""
-        text = """
-        <synthesis_output>
-            <analysis>Brief analysis.</analysis>
-            <synthesis>Answer 1</synthesis>
-            <confidence>0.7</confidence>
-            <needs_iteration>true</needs_iteration>
-            <ranking>
-                <rank position="1">100</rank>
-                <rank position="2">200</rank>
-            </ranking>
-        </synthesis_output>
-        """
+        text = json.dumps({
+            "analysis": "Brief analysis.",
+            "synthesis": "Answer 1",
+            "confidence": 0.7,
+            "needs_iteration": True,
+            "ranking": [100, 200],
+        })
         result = self.orchestrator._parse_rank_cot_response(text, self.responses)
-        self.assertEqual(result["evaluation"], "")
+        self.assertEqual(result["evaluation"], [])
         self.assertEqual(result["model_guidance"], {})
         self.assertTrue(result["needs_iteration"])
 
     def test_parse_rank_cot_missing_model_guidance(self):
         """rank-cot should work without model_guidance section."""
-        text = """
-        <synthesis_output>
-            <evaluation>
-                <response id="100"><strengths>Good</strengths><weaknesses>None</weaknesses></response>
-            </evaluation>
-            <synthesis>Answer 1</synthesis>
-            <confidence>0.9</confidence>
-            <needs_iteration>false</needs_iteration>
-            <ranking><rank position="1">100</rank></ranking>
-        </synthesis_output>
-        """
+        text = json.dumps({
+            "evaluation": [{"id": 100, "strengths": "Good", "weaknesses": "None"}],
+            "synthesis": "Answer 1",
+            "confidence": 0.9,
+            "needs_iteration": False,
+            "ranking": [100],
+        })
         result = self.orchestrator._parse_rank_cot_response(text, self.responses)
         self.assertEqual(result["model_guidance"], {})
-
-
-class TestModelGuidanceParsing(unittest.TestCase):
-    """Test _parse_model_guidance method."""
-
-    def setUp(self):
-        config = ConsortiumConfig(
-            models={"model1": 1},
-            arbiter="arbiter",
-            judging_method="default"
-        )
-        self.orchestrator = ConsortiumOrchestrator(config=config)
-
-    def test_parse_model_guidance_with_instance(self):
-        text = """
-        <model_guidance>
-            <guidance model="gpt-4o" instance="0">Be more concise.</guidance>
-            <guidance model="claude-3" instance="1">Add examples.</guidance>
-        </model_guidance>
-        """
-        result = self.orchestrator._parse_model_guidance(text)
-        self.assertEqual(result["gpt-4o_0"], "Be more concise.")
-        self.assertEqual(result["claude-3_1"], "Add examples.")
-
-    def test_parse_model_guidance_without_instance(self):
-        text = """
-        <model_guidance>
-            <guidance model="gpt-4o">Be more concise.</guidance>
-        </model_guidance>
-        """
-        result = self.orchestrator._parse_model_guidance(text)
-        self.assertEqual(result["gpt-4o_0"], "Be more concise.")
-
-    def test_parse_model_guidance_empty(self):
-        result = self.orchestrator._parse_model_guidance("no tags here")
-        self.assertEqual(result, {})
-
-    def test_parse_model_guidance_missing_section(self):
-        text = "<synthesis_output><synthesis>test</synthesis></synthesis_output>"
-        result = self.orchestrator._parse_model_guidance(text)
-        self.assertEqual(result, {})
 
 
 class TestSkipIntermediateSynthesis(unittest.TestCase):
@@ -293,16 +229,13 @@ class TestDeferredSynthesisHandling(unittest.TestCase):
 
     def test_model_guidance_in_arbiter_response(self):
         """_parse_arbiter_response should also parse model_guidance."""
-        text = """
-        <synthesis_output>
-            <synthesis>[DEFERRED]</synthesis>
-            <confidence>0.6</confidence>
-            <needs_iteration>true</needs_iteration>
-            <model_guidance>
-                <guidance model="model1" instance="0">Improve accuracy.</guidance>
-            </model_guidance>
-        </synthesis_output>
-        """
+        text = json.dumps({
+            "synthesis": "[DEFERRED]",
+            "confidence": 0.6,
+            "needs_iteration": True,
+            "ranking": [100],
+            "model_guidance": {"model1_0": "Improve accuracy."},
+        })
         result = self.orchestrator._parse_arbiter_response(text)
         self.assertEqual(result["synthesis"], "[DEFERRED]")
         self.assertTrue(result["needs_iteration"])
