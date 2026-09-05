@@ -93,11 +93,12 @@ class TestOrchestrateWithMarkdownArbiter(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "arbiter_parse_failure")
         self.assertEqual(mock_arbiter.prompt.call_count, 4)  # 2 iters x 2 calls (retry)
-        # user-facing text: ranking empty => first member response
+        # user-facing text: ranking empty => a member response (which one
+        # depends on thread completion order); never the arbiter's essay.
         from llm_consortium.models import ConsortiumModel
         cm = ConsortiumModel.__new__(ConsortiumModel)
         text = cm._final_user_text(result)
-        self.assertEqual(text, "MEMBER ONE ANSWER")
+        self.assertIn(text, ("MEMBER ONE ANSWER", "MEMBER TWO ANSWER"))
 
     def test_iteration2_prompts_have_no_meta(self):
         orch, result, prompts, _ = self._run(max_iterations=2)
