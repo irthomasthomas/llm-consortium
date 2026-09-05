@@ -1,0 +1,46 @@
+{"model": "deepseek-v4-pro", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 0.0, "out_tok": 4928, "in_tok": 8564, "chars": 13862}
+{"model": "deepseek-v4-pro", "arm": "xml", "rep": 1, "ok": true, "ranking": [650, 748], "latency": 0.0, "out_tok": 6607, "in_tok": 8564, "chars": 7525}
+{"model": "deepseek-v4-pro", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 0.0, "out_tok": 4048, "in_tok": 7943, "chars": 3742}
+{"model": "deepseek-v4-pro", "arm": "json", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 0.0, "out_tok": 7067, "in_tok": 7943, "chars": 4067}
+{"model": "deepseek-v4-pro", "arm": "schema", "status": "unsupported"}
+{"model": "kimi-k3-tee-chutes", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 180.4, "out_tok": 6076, "in_tok": 8241, "chars": 13410}
+{"model": "kimi-k3-tee-chutes", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 112.9, "out_tok": 2737, "in_tok": 7620, "chars": 6711}
+{"model": "kimi-k3-tee-chutes", "arm": "schema", "status": "unsupported"}
+{"model": "openrouter/inception/mercury-2", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 7.2, "out_tok": 2209, "in_tok": 7858, "chars": 8848}
+{"model": "openrouter/inception/mercury-2", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 3.6, "out_tok": 1605, "in_tok": 7178, "chars": 4782}
+{"model": "openrouter/inception/mercury-2", "arm": "schema", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 3.2, "out_tok": 1203, "in_tok": 7736, "chars": 3305}
+{"model": "deepseek-v4-flash", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 47.2, "out_tok": 5455, "in_tok": 8564, "chars": 15772}
+{"model": "deepseek-v4-flash", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 36.9, "out_tok": 3847, "in_tok": 7943, "chars": 4282}
+{"model": "deepseek-v4-flash", "arm": "schema", "status": "unsupported"}
+{"model": "zenmux/inclusionai/ling-3.0-flash", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 10.9, "out_tok": 2373, "in_tok": 9166, "chars": 7830}
+{"model": "zenmux/inclusionai/ling-3.0-flash", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 7.7, "out_tok": 1276, "in_tok": 8498, "chars": 3604}
+{"model": "zenmux/inclusionai/ling-3.0-flash", "arm": "schema", "status": "unsupported"}
+{"model": "glm-5.2-coding", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 70.8, "out_tok": 6690, "in_tok": 8176, "chars": 21052}
+{"model": "glm-5.2-coding", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 73.1, "out_tok": 6072, "in_tok": 7552, "chars": 10196}
+{"model": "glm-5.2-coding", "arm": "schema", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 73.7, "out_tok": 5856, "in_tok": 7552, "chars": 9775}
+{"model": "openrouter/inception/mercury-2", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 8.6, "out_tok": 2097, "in_tok": 14433, "chars": 8880}
+{"model": "openrouter/inception/mercury-2", "arm": "xml", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 11.3, "out_tok": 2489, "in_tok": 14877, "chars": 10327}
+{"model": "openrouter/inception/mercury-2", "arm": "xml", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 4.4, "out_tok": 2155, "in_tok": 14897, "chars": 7507}
+{"model": "openrouter/inception/mercury-2", "arm": "xml", "rep": 3, "ok": true, "ranking": [748, 650], "latency": 9.2, "out_tok": 1960, "in_tok": 14586, "chars": 7268}
+{"model": "openrouter/inception/mercury-2", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 4.6, "out_tok": 1340, "in_tok": 14331, "chars": 4381}
+{"model": "openrouter/inception/mercury-2", "arm": "json", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 4.9, "out_tok": 1026, "in_tok": 14147, "chars": 3069}
+{"model": "openrouter/inception/mercury-2", "arm": "json", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 4.0, "out_tok": 1556, "in_tok": 14235, "chars": 4787}
+{"model": "openrouter/inception/mercury-2", "arm": "json", "rep": 3, "ok": true, "ranking": [748, 650], "latency": 4.8, "out_tok": 1289, "in_tok": 14147, "chars": 4608}
+{"model": "openrouter/inception/mercury-2", "arm": "schema", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 4.7, "out_tok": 1331, "in_tok": 14437, "chars": 4554}
+{"model": "openrouter/inception/mercury-2", "arm": "schema", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 2.5, "out_tok": 1063, "in_tok": 14437, "chars": 3080}
+{"model": "openrouter/inception/mercury-2", "arm": "schema", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 4.3, "out_tok": 1087, "in_tok": 14437, "chars": 3859}
+{"model": "openrouter/inception/mercury-2", "arm": "schema", "rep": 3, "ok": true, "ranking": [748, 650], "latency": 3.4, "out_tok": 846, "in_tok": 14624, "chars": 2735}
+{"model": "deepseek-v4-pro", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 63.5, "out_tok": 3711, "in_tok": 15943, "chars": 8668}
+{"model": "deepseek-v4-pro", "arm": "xml", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 157.8, "out_tok": 8894, "in_tok": 15943, "chars": 11583}
+{"model": "deepseek-v4-pro", "arm": "xml", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 125.0, "out_tok": 7548, "in_tok": 15943, "chars": 12316}
+{"model": "deepseek-v4-pro", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 104.5, "out_tok": 5587, "in_tok": 15322, "chars": 8464}
+{"model": "deepseek-v4-pro", "arm": "json", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 127.2, "out_tok": 7192, "in_tok": 15322, "chars": 4427}
+{"model": "deepseek-v4-pro", "arm": "json", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 88.2, "out_tok": 5481, "in_tok": 15322, "chars": 3562}
+{"model": "deepseek-v4-pro", "arm": "schema", "status": "unsupported"}
+{"model": "kimi-k3-tee-chutes", "arm": "xml", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 213.6, "out_tok": 6700, "in_tok": 15234, "chars": 13115}
+{"model": "kimi-k3-tee-chutes", "arm": "xml", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 266.2, "out_tok": 8881, "in_tok": 15234, "chars": 19468}
+{"model": "kimi-k3-tee-chutes", "arm": "xml", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 188.2, "out_tok": 6282, "in_tok": 15234, "chars": 15458}
+{"model": "kimi-k3-tee-chutes", "arm": "json", "rep": 0, "ok": true, "ranking": [748, 650], "latency": 158.8, "out_tok": 5019, "in_tok": 14613, "chars": 9136}
+{"model": "kimi-k3-tee-chutes", "arm": "json", "rep": 1, "ok": true, "ranking": [748, 650], "latency": 133.6, "out_tok": 3944, "in_tok": 14613, "chars": 10628}
+{"model": "kimi-k3-tee-chutes", "arm": "json", "rep": 2, "ok": true, "ranking": [748, 650], "latency": 199.1, "out_tok": 5110, "in_tok": 14613, "chars": 10234}
+{"model": "kimi-k3-tee-chutes", "arm": "schema", "status": "unsupported"}

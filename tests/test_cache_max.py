@@ -4,6 +4,7 @@ import threading
 import time
 from unittest.mock import Mock, MagicMock, patch
 
+import json
 import pytest
 
 from llm_consortium.strategies.cache_max import (
@@ -346,8 +347,8 @@ class TestArbiterPromptParserContract:
     prepends the member system prompt so the shared prefix stays
     byte-identical, with the arbiter instructions appended after it."""
 
-    TAGS = ("<synthesis>", "<confidence>", "<needs_iteration>",
-            "<refinement_areas>", "<ranking>")
+    FIELDS = ('"synthesis"', '"confidence"', '"needs_iteration"',
+              '"refinement_areas"', '"ranking"')
 
     def _build_inst(self, system_prompt="Be helpful."):
         from llm_consortium.orchestrator import ConsortiumOrchestrator
@@ -366,40 +367,40 @@ class TestArbiterPromptParserContract:
     def test_output_contract_delivered_via_system_channel(self):
         sys_prompt = self._build_inst()._resolve_arbiter_sys_prompt()
         assert sys_prompt, "arbiter system prompt must not be empty"
-        for tag in self.TAGS:
-            assert tag in sys_prompt, f"missing {tag} in arbiter system prompt"
+        for field in self.FIELDS:
+            assert field in sys_prompt, f"missing {field} in arbiter system prompt"
 
     def test_cache_max_system_composition_keeps_member_prefix(self):
         sys_prompt = self._build_inst(
             system_prompt="MEMBER-SYS")._resolve_arbiter_sys_prompt()
         assert sys_prompt.startswith("MEMBER-SYS\n\n")
-        for tag in self.TAGS:
-            assert tag in sys_prompt, f"contract {tag} must follow member prefix"
+        for field in self.FIELDS:
+            assert field in sys_prompt, f"contract {field} must follow member prefix"
 
     def test_user_prompt_is_data_only(self):
         prompt = self._build_inst()._prepare_arbiter_prompt("ORIG", [], [])
-        for tag in self.TAGS + ("<synthesis_output>",):
-            assert tag not in prompt, f"user prompt must be data-only, found {tag}"
+        for field in self.FIELDS + ('"model_guidance"',):
+            assert field not in prompt, f"user prompt must be data-only, found {field}"
         assert "ORIG" in prompt
 
     def test_legacy_inline_fallback_restores_user_prompt_contract(self):
         inst = self._build_inst()
         inst.arbiter_system_enabled = False
         prompt = inst._prepare_arbiter_prompt("ORIG", [], [])
-        for tag in self.TAGS:
-            assert tag in prompt, f"legacy inline mode must restore {tag}"
+        assert "JSON" in prompt or "json" in prompt, "legacy inline mode must request JSON"
 
     def test_parser_extracts_from_contract_conforming_response(self):
         inst = self._build_inst()
-        fake_arbiter_reply = """<synthesis_output>
-<analysis>A</analysis>
-<synthesis>SYNTHESIZED ANSWER</synthesis>
-<confidence>0.87</confidence>
-<needs_iteration>false</needs_iteration>
-<refinement_areas></refinement_areas>
-<ranking><rank position="1">1</rank></ranking>
-</synthesis_output>"""
+        fake_arbiter_reply = json.dumps({
+            "analysis": "A",
+            "synthesis": "SYNTHESIZED ANSWER",
+            "confidence": 0.87,
+            "needs_iteration": False,
+            "refinement_areas": [],
+            "ranking": [1],
+        })
         parsed = inst._parse_arbiter_response(fake_arbiter_reply)
+        assert parsed["parse_success"] is True
         assert parsed["synthesis"] == "SYNTHESIZED ANSWER"
         assert parsed["confidence"] == pytest.approx(0.87)
         assert parsed["needs_iteration"] is False
@@ -412,9 +413,9 @@ class TestArbiterSystemPromptMethodResolution:
     contract (not another method's)."""
 
     METHOD_MARKERS = {
-        "default": "<synthesis_output>",
-        "rank": "<ranking>",
-        "rank-cot": "<evaluation>",
+        "default": '"synthesis"',
+        "rank": '"ranking"',
+        "rank-cot": '"evaluation"',
     }
 
     def _load(self, method):
@@ -426,9 +427,9 @@ class TestArbiterSystemPromptMethodResolution:
         assert self._load("default") == orch_mod._read_arbiter_system_prompt()
 
     @pytest.mark.parametrize("method,marker", [
-        ("rank", "<ranking>"),
-        ("rank-cot", "<evaluation>"),
-        ("default", "<synthesis_output>"),
+        ("rank", '"ranking"'),
+        ("rank-cot", '"evaluation"'),
+        ("default", '"synthesis"'),
     ])
     def test_method_contract_markers(self, method, marker):
         sys_prompt = self._load(method)
@@ -509,7 +510,7 @@ class TestArbiterModelReceivesSystemKwarg:
         inst.consortium_id = None
 
         fake_response = Mock()
-        fake_response.text.return_value = "<synthesis_output><synthesis>S</synthesis><confidence>0.9</confidence><needs_iteration>false</needs_iteration><refinement_areas></refinement_areas><ranking></ranking></synthesis_output>"
+        fake_response.text.return_value = json.dumps({"analysis":"a","synthesis":"S","confidence":0.9,"needs_iteration":False,"refinement_areas":[],"ranking":[1]})
         fake_model = Mock()
         fake_model.prompt.return_value = fake_response
 
@@ -528,7 +529,7 @@ class TestArbiterModelReceivesSystemKwarg:
         inst.iteration_history = []
 
         fake_response = Mock()
-        fake_response.text.return_value = "<synthesis_output><synthesis>S</synthesis><confidence>0.9</confidence><needs_iteration>false</needs_iteration><refinement_areas></refinement_areas><ranking></ranking></synthesis_output>"
+        fake_response.text.return_value = json.dumps({"analysis":"a","synthesis":"S","confidence":0.9,"needs_iteration":False,"refinement_areas":[],"ranking":[1]})
         fake_model = Mock()
         fake_model.prompt.return_value = fake_response
         fake_conv = Mock()

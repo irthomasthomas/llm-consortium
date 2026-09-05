@@ -1,0 +1,1049 @@
+<arbiter_prompt>
+    <user_instructions></user_instructions>
+    <original_prompt><documents>
+<document index="1">
+<source>llm_report_builder.py</source>
+<document_content>
+  1  #!/usr/bin/env python3
+  2  """
+  3  Generate a self-contained Y2K-corporate static HTML report of llm CLI log
+  4  conversations. Selection: FIRST prompt begins with the literal, case-sensitive
+  5  two-character prefix "U:". Status: PASS iff the LAST response contains the exact
+  6  substrings "SUMMARY" and "SUGGEST". Stdlib only; database is opened read-only.
+  7  """
+  8  import argparse
+  9  import html
+ 10  import json
+ 11  import math
+ 12  import re
+ 13  import sqlite3
+ 14  import subprocess
+ 15  from datetime import datetime, timezone
+ 16  from pathlib import Path
+ 17  
+ 18  REASON_RE = re.compile(r"reason|think", re.I)
+ 19  
+ 20  DOC_PATTERNS = [
+ 21      re.compile(r"<documents\b[^>]*>.*?</documents>", re.S | re.I),
+ 22      re.compile(r"<document\b[^>]*>.*?</document>", re.S | re.I),
+ 23      re.compile(r"<document\b[^>]*/>", re.I),
+ 24      re.compile(r"<document_content\b[^>]*>.*?</document_content>", re.S | re.I),
+ 25      re.compile(r"<source\b[^>]*>.*?</source>", re.S | re.I),
+ 26  ]
+ 27  
+ 28  
+ 29  def esc(s):
+ 30      if s is None:
+ 31          s = ""
+ 32      return html.escape(str(s), quote=True)
+ 33  
+ 34  
+ 35  # ---------- document folding ----------
+ 36  
+ 37  def find_doc_spans(text):
+ 38      spans = []
+ 39      for pat in DOC_PATTERNS:
+ 40          for m in pat.finditer(text):
+ 41              spans.append((m.start(), m.end()))
+ 42      if not spans:
+ 43          return []
+ 44      spans.sort()
+ 45      merged = []
+ 46      cs, ce = spans[0]
+ 47      for s, e in spans[1:]:
+ 48          if s <= ce:
+ 49              ce = max(ce, e)
+ 50          else:
+ 51              merged.append((cs, ce))
+ 52              cs, ce = s, e
+ 53      merged.append((cs, ce))
+ 54      return merged
+ 55  
+ 56  
+ 57  def fold_prompt(text):
+ 58      spans = find_doc_spans(text)
+ 59      if not spans:
+ 60          return '<pre class="content">' + esc(text) + '</pre>'
+ 61      out = []
+ 62      pos = 0
+ 63      for s, e in spans:
+ 64          if s > pos:
+ 65              out.append('<pre class="content">' + esc(text[pos:s]) + '</pre>')
+ 66          out.append('<details class="doc"><summary>Attached documents (click to expand)</summary><pre>'
+ 67                     + esc(text[s:e]) + '</pre></details>')
+ 68          pos = e
+ 69      if pos < len(text):
+ 70          out.append('<pre class="content">' + esc(text[pos:]) + '</pre>')
+ 71      return "".join(out)
+ 72  
+ 73  
+ 74  def non_doc_text(text):
+ 75      spans = find_doc_spans(text)
+ 76      if not spans:
+ 77          return text
+ 78      parts = []
+ 79      pos = 0
+ 80      for s, e in spans:
+ 81          parts.append(text[pos:s])
+ 82          pos = e
+ 83      parts.append(text[pos:])
+ 84      return "".join(parts)
+ 85  
+ 86  
+ 87  def render_first_prompt(text):
+ 88      if text is None:
+ 89          text = ""
+ 90      full = fold_prompt(text)
+ 91      nd = non_doc_text(text)
+ 92      if len(nd) > 4000:
+ 93          return ('<pre class="content">' + esc(nd[:4000]) + '</pre>'
+ 94                  + '<details class="fulltext"><summary>Show full text</summary>'
+ 95                  + full + '</details>')
+ 96      return full
+ 97  
+ 98  
+ 99  def render_last_response(text):
+100      if text is None:
+101          text = ""
+102      if len(text) > 4000:
+103          return ('<pre class="content">' + esc(text[:4000]) + '</pre>'
+104                  + '<details class="fulltext"><summary>Show full text</summary>'
+105                  + '<pre class="content">' + esc(text) + '</pre></details>')
+106      return '<pre class="content">' + esc(text) + '</pre>'
+107  
+108  
+109  # ---------- formatting / status ----------
+110  
+111  def fmt_dt(s):
+112      if not s:
+113          return ""
+114      try:
+115          t = s
+116          if t.endswith("Z"):
+117              t = t[:-1] + "+00:00"
+118          dt = datetime.fromisoformat(t)
+119          if dt.tzinfo is None:
+120              dt = dt.replace(tzinfo=timezone.utc)
+121          return dt.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+122      except Exception:
+123          if len(s) >= 16:
+124              return s[:16].replace("T", " ") + " UTC"
+125          return s
+126  
+127  
+128  
+129  def parse_dt_utc(s):
+130      if not s:
+131          return None
+132      t = s
+133      if t.endswith("Z"):
+134          t = t[:-1] + "+00:00"
+135      if "T" not in t and len(t) >= 10:
+136          t = t[:10] + "T00:00:00"
+137      try:
+138          dt = datetime.fromisoformat(t)
+139      except Exception:
+140          return None
+141      if dt.tzinfo is not None:
+142          dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+143      return dt
+144  
+145  
+146  def display_value(v):
+147      if isinstance(v, str):
+148          sval = v
+149      else:
+150          try:
+151              sval = json.dumps(v, ensure_ascii=False)
+152          except Exception:
+153              sval = str(v)
+154      sval = sval.replace("\r", " ")
+155      if len(sval) > 800:
+156          sval = sval[:800] + " ...[truncated]"
+157      return sval
+158  
+159  
+160  def _deep_reason(obj, path, out):
+161      if isinstance(obj, dict):
+162          for k, v in obj.items():
+163              p = f"{path}.{k}"
+164              if REASON_RE.search(str(k)):
+165                  out.append((p, v))
+166              _deep_reason(v, p, out)
+167      elif isinstance(obj, list):
+168          for i, v in enumerate(obj):
+169              _deep_reason(v, f"{path}[{i}]", out)
+170  
+171  
+172  def collect_reasoning(rows, col_names):
+173      lines = []
+174      seen = set()
+175      # 1) columns whose NAME matches reason|think
+176      for row in rows:
+177          for c in col_names:
+178              if REASON_RE.search(c):
+179                  v = row.get(c)
+180                  if v is None:
+181                      continue
+182                  if isinstance(v, str) and not v.strip():
+183                      continue
+184                  sv = display_value(v)
+185                  key = (c, sv)
+186                  if key not in seen:
+187                      seen.add(key)
+188                      lines.append((c, sv))
+189      # 2) JSON-ish columns: recursively search keys matching reason|think
+190      for row in rows:
+191          for c in col_names:
+192              v = row.get(c)
+193              if not isinstance(v, str):
+194                  continue
+195              stripped = v.lstrip()
+196              if not stripped or stripped[0] not in "{[":
+197                  continue
+198              try:
+199                  data = json.loads(v)
+200              except Exception:
+201                  continue
+202              if not isinstance(data, (dict, list)):
+203                  continue
+204              results = []
+205              _deep_reason(data, c, results)
+206              for p, val in results:
+207                  sv = display_value(val)
+208                  key = (p, sv)
+209                  if key not in seen:
+210                      seen.add(key)
+211                      lines.append((p, sv))
+212      return lines[:25]
+213  
+214  
+215  def grid_lightness(turns):
+216      t = min(turns, 50) / 50.0
+217      return 88.0 - 46.0 * math.sqrt(t)
+218  
+219  
+220  def shade_style(turns, status):
+221      hue = 120 if status == "PASS" else 0
+222      return f"background:hsl({hue},60%,{grid_lightness(turns):.1f}%)"
+223  
+224  
+225  def pass_fail(last_response):
+226      if last_response is None:
+227          last_response = ""
+228      has_sum = "SUMMARY" in last_response
+229      has_sug = "SUGGEST" in last_response
+230      if has_sum and has_sug:
+231          return "PASS", "PASS: last response contains both SUMMARY and SUGGEST"
+232      missing = []
+233      if not has_sum:
+234          missing.append("SUMMARY")
+235      if not has_sug:
+236          missing.append("SUGGEST")
+237      return "FAIL", "FAIL: missing " + " and ".join(missing) + " in last response"
+238  
+239  
+240  def conv_status(conv):
+241      last_resp = conv["rows"][-1]["response"] or ""
+242      return pass_fail(last_resp)[0]
+243  
+244  
+245  def to_num(v):
+246      if isinstance(v, (int, float)):
+247          return v
+248      if isinstance(v, str):
+249          try:
+250              return float(v)
+251          except Exception:
+252              return 0
+253      return 0
+254  
+255  
+256  # ---------- database ----------
+257  
+258  def resolve_db(override):
+259      if override:
+260          p = Path(override).expanduser().resolve()
+261          if not p.exists():
+262              raise SystemExit(f"Database not found: {p}")
+263          return str(p)
+264      try:
+265          res = subprocess.run(["llm", "logs", "path"], capture_output=True, text=True, timeout=20)
+266          p = Path(res.stdout.strip())
+267          if p.exists():
+268              return str(p)
+269      except Exception:
+270          pass
+271      fallback = Path.home() / ".config/io.datasette.llm/logs.db"
+272      if fallback.exists():
+273          return str(fallback)
+274      raise SystemExit("Could not resolve llm logs database")
+275  
+276  
+277  def connect_ro(path):
+278      uri = Path(path).resolve().as_uri() + "?mode=ro"
+279      con = sqlite3.connect(uri, uri=True)
+280      con.row_factory = sqlite3.Row
+281      return con
+282  
+283  
+284  def column_names(con):
+285      return [r[1] for r in con.execute("PRAGMA table_info(responses)")]
+286  
+287  
+288  def matching_conversations(con):
+289      # Case-sensitive prefix check via GLOB (LIKE would be case-insensitive).
+290      return con.execute("""
+291          WITH firsts AS (
+292              SELECT conversation_id, MIN(id) AS first_id
+293              FROM responses
+294              GROUP BY conversation_id
+295          )
+296          SELECT firsts.conversation_id, firsts.first_id, r.prompt
+297          FROM firsts
+298          JOIN responses r ON r.id = firsts.first_id
+299          WHERE r.prompt GLOB 'U:*'
+300          ORDER BY firsts.first_id
+301      """).fetchall()
+302  
+303  
+304  def fetch_rows(con, conversation_id):
+305      return con.execute(
+306          "SELECT * FROM responses WHERE conversation_id = ? ORDER BY id",
+307          (conversation_id,),
+308      ).fetchall()
+309  
+310  
+311  # ---------- HTML rendering ----------
+312  
+313  CSS = r"""
+314  body { background:#c9c4b4; color:#000; font-family:Verdana,Tahoma,sans-serif; font-size:12px; margin:0; padding:18px; }
+315  h1,h2,h3 { font-family:'Times New Roman',Times,serif; color:#003366; margin:0 0 8px 0; }
+316  h1 { font-size:26px; border-bottom:3px double #003366; padding-bottom:4px; }
+317  h2 { font-size:18px; border-bottom:1px solid #003366; margin:20px 0 6px 0; }
+318  .letterhead { border:2px outset #999; background:#e8e4d8; padding:10px 14px; margin-bottom:14px; }
+319  .memo-line { font-variant:small-caps; letter-spacing:1px; font-weight:bold; color:#003366; margin:4px 0 8px 0; }
+320  table.meta { border-collapse:collapse; width:100%; margin:6px 0; }
+321  table.meta th, table.meta td { border:1px solid #666; padding:4px 6px; text-align:left; vertical-align:top; }
+322  table.meta th { background:#d8d4c8; font-variant:small-caps; width:170px; }
+323  .card { border:1px solid #000; border-left:8px solid #808080; background:#f0ece0; margin:14px 0; padding:10px 12px; }
+324  .card-pass { border-left-color:#2e7d32; }
+325  .card-fail { border-left-color:#c62828; }
+326  .card-header { border-bottom:2px groove #999; padding-bottom:4px; margin-bottom:6px; }
+327  .recno { font-weight:bold; font-size:15px; color:#003366; font-family:'Times New Roman',Times,serif; }
+328  .conv { font-size:11px; color:#444; margin-left:8px; }
+329  .badge { font-variant:small-caps; font-weight:bold; padding:1px 8px; border:1px solid #000; color:#fff; float:right; }
+330  .badge-pass { background:#2e7d32; }
+331  .badge-fail { background:#c62828; }
+332  .section-title { font-variant:small-caps; font-weight:bold; color:#003366; font-family:'Times New Roman',Times,serif; font-size:14px; border-bottom:1px solid #999; margin:12px 0 4px 0; }
+333  pre { font-family:'Courier New',Courier,monospace; font-size:11px; white-space:pre-wrap; word-wrap:break-word; background:#fffff4; border:1px inset #999; padding:6px; margin:4px 0; }
+334  pre.reason { background:#f4f0e4; font-size:10px; border:1px solid #999; }
+335  details.doc { border:1px inset #666; background:#d8d4c8; margin:6px 0; padding:2px; }
+336  details.doc summary { cursor:pointer; font-weight:bold; padding:3px 6px; color:#003366; }
+337  details.doc pre { background:#fdf8ec; border:1px solid #aaa; margin:4px; }
+338  details.fulltext { margin:6px 0; }
+339  details.reasoning summary { cursor:pointer; color:#003366; font-weight:bold; }
+340  details.fulltext summary { cursor:pointer; color:#003366; font-weight:bold; }
+341  .grid { margin:8px 0 4px 0; }
+342  a.gridcell { display:inline-block; width:16px; height:16px; margin:2px; border:1px solid #444; text-align:center; line-height:16px; font-size:9px; font-weight:bold; color:#000; text-decoration:none; }
+343  a.gridcell:hover { border-color:#003366; }
+344  .legend { margin:4px 0 8px 0; font-size:11px; }
+345  .legend .swatch { display:inline-block; width:14px; height:14px; border:1px solid #444; vertical-align:middle; margin-left:12px; }
+346  .legend span { vertical-align:middle; }
+347  .no-users { text-align:center; font-size:16px; font-family:'Times New Roman',Times,serif; color:#003366; padding:60px 0; }
+348  footer { border-top:1px solid #666; margin-top:22px; padding-top:6px; font-size:10px; color:#333; }
+349  """
+350  
+351  
+352  def legend_html():
+353      def sw(status, turns, label):
+354          hue = 120 if status == "PASS" else 0
+355          return (f'<span class="swatch" style="background:hsl({hue},60%,{grid_lightness(turns):.1f}%)"></span>'
+356                  f'<span>{label}</span>')
+357      return ('<div class="legend"><b>Legend:</b> '
+358              + sw("PASS", 1, "PASS &mdash; 1 turn ")
+359              + sw("PASS", 50, "PASS &mdash; 50+ turns ")
+360              + sw("FAIL", 1, "FAIL &mdash; 1 turn ")
+361              + sw("FAIL", 50, "FAIL &mdash; 50+ turns ")
+362              + "</div>")
+363  
+364  
+365  def grid_html(convs):
+366      cells = []
+367      for idx, conv in enumerate(convs, start=1):
+368          first = conv["rows"][0]
+369          last = conv["rows"][-1]
+370          conv_id = first["conversation_id"]
+371          turns = len(conv["rows"])
+372          status = conv_status(conv)
+373          title = f"{conv_id} — {turns} turns — {status}"
+374          cells.append(
+375              f'<a class="gridcell" href="#card-{idx}" title="{esc(title)}" '
+376              f'style="{shade_style(turns, status)}">{idx}</a>'
+377          )
+378      return '<div class="grid">' + "".join(cells) + "</div>"
+379  
+380  
+381  def meta_table(conv, col_names):
+382      rows = conv["rows"]
+383      first, last = rows[0], rows[-1]
+384      conv_id = first["conversation_id"]
+385      turns = len(rows)
+386      status, rationale = pass_fail(last["response"] or "")
+387  
+388      models = sorted({r["model"] for r in rows if r.get("model")})
+389      has_tokens = "input_tokens" in col_names and "output_tokens" in col_names
+390      in_sum = out_sum = None
+391      if has_tokens:
+392          in_sum = int(sum(to_num(r.get("input_tokens")) for r in rows))
+393          out_sum = int(sum(to_num(r.get("output_tokens")) for r in rows))
+394  
+395      trs = [
+396          ("Conversation ID", esc(conv_id)),
+397          ("First activity", esc(fmt_dt(first["datetime_utc"]))),
+398          ("Last activity", esc(fmt_dt(last["datetime_utc"]))),
+399          ("Models", esc(", ".join(models))),
+400          ("Turn count", str(turns)),
+401      ]
+402      if has_tokens:
+403          trs.append(("Input tokens", str(in_sum)))
+404          trs.append(("Output tokens", str(out_sum)))
+405  
+406      reason_lines = collect_reasoning(rows, col_names)
+407      if reason_lines:
+408          body = "\n".join(f"{esc(k)}: {esc(v)}" for k, v in reason_lines)
+409          trs.append(("Reasoning / thinking",
+410                      f'<details class="reasoning"><summary>Reasoning / thinking '
+411                      f'({len(reason_lines)} entries)</summary><pre class="reason">{body}</pre></details>'))
+412  
+413      # C1: single badge lives in the card header; meta row is plain text
+414      trs.append(("Status", f"<b>{status}</b>"))
+415      trs.append(("Rationale", esc(rationale)))
+416  
+417      rows_html = "".join(
+418          f"<tr><th>{esc(k)}</th><td>{v}</td></tr>" for k, v in trs
+419      )
+420      return '<table class="meta">' + rows_html + "</table>"
+421  
+422  
+423  def render_card(idx, conv, col_names):
+424      first = conv["rows"][0]
+425      last = conv["rows"][-1]
+426      conv_id = first["conversation_id"]
+427      turns = len(conv["rows"])
+428      status = conv_status(conv)
+429      head = (
+430          f'<div class="card card-{status.lower()}" id="card-{idx}">'
+431          f'<div class="card-header">'
+432          f'<span class="recno">Record {idx}</span>'
+433          f'<span class="badge badge-{status.lower()}">{status}</span>'
+434          f'<span class="conv">conversation_id: {esc(conv_id)} &mdash; {turns} turns</span>'
+435          f'</div>'
+436      )
+437      meta = meta_table(conv, col_names)
+438      prompt_html = render_first_prompt(first["prompt"] or "")
+439      resp_html = render_last_response(last["response"] or "")
+440      return (head + meta
+441              + '<div class="section-title">First Prompt</div>' + prompt_html
+442              + '<div class="section-title">Last Response</div>' + resp_html
+443              + "</div>")
+444  
+445  
+446  def build_page(convs, col_names, db_path, gen_time):
+447      rules = '<table class="meta">'
+448      rules += f"<tr><th>Generated</th><td>{esc(gen_time)}</td></tr>"
+449      rules += f"<tr><th>Database</th><td>{esc(db_path)}</td></tr>"
+450      rules += '<tr><th>Selection rule</th><td>Conversations whose FIRST prompt begins with the literal, case-sensitive two-character prefix "U:".</td></tr>'
+451      rules += '<tr><th>Status rule</th><td>PASS if the LAST response contains exact substrings "SUMMARY" and "SUGGEST".</td></tr></table>'
+452      letterhead = ('<div class="letterhead"><h1>LLM LOG ANALYTICS</h1>'
+453                    '<div class="memo-line">MEMORANDUM &mdash; INTERNAL</div>' + rules + "</div>")
+454      if not convs:
+455          body = letterhead + (
+456              '<div class="no-users"><h2>No matching conversations found</h2>'
+457              '<p>No conversations whose first prompt begins with &ldquo;U:&rdquo; were found in the database.</p></div>'
+458          )
+459      else:
+460          body = (letterhead
+461                  + "<h2>Activity Grid</h2>" + grid_html(convs) + legend_html()
+462                  + "<h2>Conversation Records</h2>"
+463                  + "".join(render_card(i, c, col_names) for i, c in enumerate(convs, start=1)))
+464      footer = f"<footer>LLM LOG ANALYTICS &mdash; internal report generated {esc(gen_time)}. No external assets or network requests.</footer>"
+465      return f"""<!DOCTYPE html>
+466  <html lang="en">
+467  <head>
+468  <meta charset="utf-8">
+469  <meta name="viewport" content="width=device-width, initial-scale=1">
+470  <title>LLM Conversation Activity Report</title>
+471  <style>{CSS}</style>
+472  </head>
+473  <body>
+474  {body}
+475  {footer}
+476  </body>
+477  </html>
+478  """
+479  
+480  
+481  # ---------- main ----------
+482  
+483  def parse_args():
+484      ap = argparse.ArgumentParser(description="Build a self-contained HTML report from the llm CLI logs database.")
+485      ap.add_argument("--db", help="Path to the llm logs SQLite database (default: llm logs path, then ~/.config/io.datasette.llm/logs.db)")
+486      ap.add_argument("--out", default="./llm_report.html", help="Output HTML file (default: ./llm_report.html)")
+487      ap.add_argument("--since", dest="since", default=None,
+488                      help="Only include conversations whose first activity is on/after YYYY-MM-DD (UTC)")
+489      return ap.parse_args()
+490  
+491  
+492  def main():
+493      args = parse_args()
+494      db_path = resolve_db(args.db)
+495      con = connect_ro(db_path)
+496      try:
+497          cols = column_names(con)
+498          convs = []
+499          for conv_id, first_id, prompt in matching_conversations(con):
+500              if not (prompt or "").startswith("U:"):
+501                  continue  # extra literal guard (should already be enforced by GLOB)
+502              rows = [dict(r) for r in fetch_rows(con, conv_id)]
+503              if not rows:
+504                  continue
+505              convs.append({"conversation_id": conv_id, "rows": rows})
+506          if args.since:
+507              # Work with naive UTC datetimes throughout this filter.
+508              cut_txt = args.since
+509              if "T" not in cut_txt:
+510                  cut_txt = cut_txt + "T00:00:00"
+511              try:
+512                  cutoff = datetime.fromisoformat(cut_txt)
+513                  if cutoff.tzinfo is not None:
+514                      cutoff = cutoff.astimezone(timezone.utc).replace(tzinfo=None)
+515              except Exception:
+516                  raise SystemExit(f"Invalid --since date: {args.since}")
+517              convs = [c for c in convs if (parse_dt_utc(c["rows"][0].get("datetime_utc")) or datetime(1970,1,1)) >= cutoff]
+518      finally:
+519          con.close()
+520  
+521      gen_time = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+522      page = build_page(convs, cols, db_path, gen_time)
+523  
+524      out_path = Path(args.out)
+525      out_path.parent.mkdir(parents=True, exist_ok=True)
+526      out_path.write_text(page, encoding="utf-8")
+527  
+528      passes = sum(1 for c in convs if conv_status(c) == "PASS")
+529      fails = len(convs) - passes
+530      print(f"{len(convs)} conversations, {passes} pass, {fails} fail -> {args.out}")
+531  
+532  
+533  if __name__ == "__main__":
+534      main()
+</document_content>
+</document>
+<document index="2">
+<source>weekly_dashboard.py</source>
+<document_content>
+  1  #!/usr/bin/env python3
+  2  """Weekly agent-session dashboard builder (shared module).
+  3  
+  4  Single source of truth for the compact weekly dashboard that
+  5  send_llm_weekly_tg.sh renders and screenshots. Importable for tests;
+  6  also runnable standalone:
+  7  
+  8      python3 weekly_dashboard.py --since 2026-07-27 --out /tmp/dash.html [--db PATH]
+  9  """
+ 10  import argparse
+ 11  import html
+ 12  import math
+ 13  import re
+ 14  import sqlite3
+ 15  import subprocess
+ 16  from pathlib import Path
+ 17  
+ 18  SEL_SQL = """
+ 19    SELECT f.conversation_id FROM (
+ 20      SELECT conversation_id, MIN(id) mid FROM responses GROUP BY conversation_id
+ 21    ) f JOIN responses r2 ON r2.id=f.mid
+ 22    WHERE r2.prompt GLOB 'U:*' AND substr(r2.datetime_utc,1,10) >= ?
+ 23  """
+ 24  
+ 25  
+ 26  def esc(x):
+ 27      return html.escape(str(x), quote=True)
+ 28  
+ 29  
+ 30  def connect_ro(path):
+ 31      con = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True)
+ 32      con.row_factory = sqlite3.Row
+ 33      return con
+ 34  
+ 35  
+ 36  def resolve_db(override=None):
+ 37      if override:
+ 38          return str(Path(override).expanduser().resolve())
+ 39      try:
+ 40          r = subprocess.run(["llm", "logs", "path"], capture_output=True, text=True, timeout=20)
+ 41          p = Path(r.stdout.strip())
+ 42          if p.exists():
+ 43              return str(p)
+ 44      except Exception:
+ 45          pass
+ 46      return str(Path.home() / ".config/io.datasette.llm/logs.db")
+ 47  
+ 48  
+ 49  def status_of(resp):
+ 50      return "PASS" if (resp and "SUMMARY" in resp and "SUGGEST" in resp) else "FAIL"
+ 51  
+ 52  
+ 53  def gather(db_path, since):
+ 54      """Return (cards, rows). A2: empty selection returns ([], []) — no IN () crash."""
+ 55      con = connect_ro(db_path)
+ 56      try:
+ 57          convs = [r[0] for r in con.execute(SEL_SQL, (since,))]
+ 58          if not convs:
+ 59              return [], []
+ 60          rows = list(con.execute(
+ 61              f"SELECT * FROM responses WHERE conversation_id IN ({','.join('?' * len(convs))}) ORDER BY id",
+ 62              convs))
+ 63      finally:
+ 64          con.close()
+ 65      by = {}
+ 66      for r in rows:
+ 67          by.setdefault(r["conversation_id"], []).append(r)
+ 68      cards = []
+ 69      for cid in convs:
+ 70          trs = by[cid]
+ 71          tail = re.sub(r"\s+", " ", trs[-1]["response"] or "").strip()
+ 72          cards.append({
+ 73              "cid": cid,
+ 74              "turns": len(trs),
+ 75              "status": status_of(trs[-1]["response"]),
+ 76              "model": (trs[0]["model"] or "").split("/")[-1],
+ 77              "first": (trs[0]["datetime_utc"] or "")[:16].replace("T", " "),
+ 78              "snip": tail[:220] + ("…" if len(tail) > 220 else ""),
+ 79          })
+ 80      cards.sort(key=lambda c: c["first"])
+ 81      return cards, rows
+ 82  
+ 83  
+ 84  def shade(turns, status):
+ 85      hue = 120 if status == "PASS" else 0
+ 86      light = 88 - 46 * (min(turns, 50) / 50.0) ** 0.5
+ 87      return f"hsl({hue},60%,{light:.1f}%)"
+ 88  
+ 89  
+ 90  def build_html(cards, rows, since):
+ 91      if not cards:
+ 92          return ('<!DOCTYPE html><html><head><meta charset="utf-8"><title>LLM Weekly</title></head>'
+ 93                  '<body style="font-family:Verdana,Tahoma,sans-serif;background:#c9c4b4;padding:40px">'
+ 94                  f'<h1 style="font-family:\'Times New Roman\',serif;color:#003366">'
+ 95                  f'No agent sessions since {esc(since)}</h1></body></html>')
+ 96  
+ 97      days = {}
+ 98      for c in cards:
+ 99          days.setdefault(c["first"][:10], []).append(c)
+100      pn = sum(1 for c in cards if c["status"] == "PASS")
+101      fn = len(cards) - pn
+102      tt = sum(c["turns"] for c in cards)
+103      in_tok = sum(int(r["input_tokens"] or 0) for r in rows if r["input_tokens"] is not None)
+104      out_tok = sum(int(r["output_tokens"] or 0) for r in rows if r["output_tokens"] is not None)
+105      models = {}
+106      for r in rows:
+107          m = (r["model"] or "").split("/")[-1]
+108          models[m] = models.get(m, 0) + 1
+109      top_models = sorted(models.items(), key=lambda x: -x[1])[:8]
+110  
+111      grid = "".join(
+112          f'<a title="{esc(c["cid"])} — {c["turns"]} turns — {c["status"]}" '
+113          f'style="display:inline-block;width:14px;height:14px;border:1px solid #444;'
+114          f'background:{shade(c["turns"], c["status"])};margin:1px"></a>'
+115          for c in cards)
+116      days_html = "".join(
+117          f'<div style="margin:4px 0"><b>{esc(d)}</b> — {len(days[d])} sessions '
+118          f'(✅{sum(1 for x in days[d] if x["status"] == "PASS")} '
+119          f'❌{sum(1 for x in days[d] if x["status"] == "FAIL")})</div>'
+120          for d in sorted(days))
+121      models_html = "".join(f"<tr><td>{esc(m)}</td><td>{n}</td></tr>" for m, n in top_models)
+122      cards_html = "".join(
+123          f'<div class="card" style="border-left:10px solid '
+124          f'{"#2e7d32" if c["status"] == "PASS" else "#c62828"}">'
+125          f'<div class="rowh"><span class="num">#{i}</span> '
+126          f'<b>{"✅ PASS" if c["status"] == "PASS" else "❌ FAIL"}</b> '
+127          f'<span class="cid">{esc(c["cid"])}</span></div>'
+128          f'<div class="meta">{esc(c["first"])} · {esc(c["model"])} · {c["turns"]} turns</div>'
+129          f'<details><summary class="snip-title">Snippet</summary>'
+130          f'<div class="snip">{esc(c["snip"])}</div></details></div>'
+131          for i, c in enumerate(cards, 1))
+132  
+133      return f'''<!DOCTYPE html><html><head><meta charset="utf-8"><title>LLM Weekly Agent Sessions</title>
+134  <style>
+135  body{{font-family:Verdana,Tahoma,sans-serif;background:#c9c4b4;color:#111;margin:0;padding:20px}}
+136  h1,h2{{font-family:'Times New Roman',serif;color:#003366}}
+137  h1{{border-bottom:3px double #003366;padding-bottom:6px}} h2{{border-bottom:1px solid #003366;margin-top:24px}}
+138  .kpis{{display:flex;gap:12px;flex-wrap:wrap;font-family:'Courier New',monospace;font-size:13px}}
+139  .kpi{{background:#f0ece0;border:1px inset #666;padding:8px 14px;font-weight:bold}}
+140  .kpi b{{display:block;font-size:26px;color:#003366}}
+141  .grid{{background:#f0ece0;border:1px inset #666;padding:10px;line-height:0}}
+142  .card{{background:#f0ece0;border:1px solid #000;margin:8px 0;padding:8px 10px}}
+143  .rowh{{font-family:'Times New Roman',serif;font-size:14px}}
+144  .num{{color:#003366;font-weight:bold}} .cid{{color:#555;font-size:12px;margin-left:6px}}
+145  .meta{{font-size:11px;color:#333}} .snip{{font-size:12px;color:#222;margin-top:4px}}
+146  .snip-title{{cursor:pointer;font-size:12px;color:#003366}}
+147  table{{border-collapse:collapse;background:#f0ece0}} td,th{{border:1px solid #666;padding:4px 8px}}
+148  </style></head><body>
+149  <h1>LLM Weekly Agent Session Digest</h1>
+150  <div class="kpis">
+151  <span class="kpi"><b>{len(cards)}</b>sessions</span>
+152  <span class="kpi"><b>{pn}</b>✅ completed</span>
+153  <span class="kpi"><b>{fn}</b>❌ incomplete</span>
+154  <span class="kpi"><b>{tt}</b>turns</span>
+155  <span class="kpi"><b>{in_tok/1e6:.1f}M</b>in-tokens</span>
+156  <span class="kpi"><b>{out_tok/1e6:.2f}M</b>out-tokens</span>
+157  </div>
+158  <h2>Activity Grid</h2><div class="grid">{grid}</div>
+159  <div style="font-size:11px;margin-top:4px">✅ green = completed · ❌ red = incomplete · darker = more turns</div>
+160  <h2>By Day</h2>{days_html}
+161  <h2>Top Models</h2><table><tr><th>Model</th><th>Turns</th></tr>{models_html}</table>
+162  <h2>Sessions</h2>{cards_html}
+163  </body></html>'''
+164  
+165  
+166  def main():
+167      ap = argparse.ArgumentParser()
+168      ap.add_argument("--since", required=True, help="YYYY-MM-DD (UTC)")
+169      ap.add_argument("--out", default="/tmp/llm_weekly_dashboard.html")
+170      ap.add_argument("--db", default=None)
+171      a = ap.parse_args()
+172      cards, rows = gather(resolve_db(a.db), a.since)
+173      Path(a.out).write_text(build_html(cards, rows, a.since), encoding="utf-8")
+174      print(f"{len(cards)} sessions -> {a.out}")
+175  
+176  
+177  if __name__ == "__main__":
+178      main()
+</document_content>
+</document>
+</documents>
+</original_prompt>
+    <model_responses>
+        --- RESPONSE 650 (Model: ox-alpha) ---
+You've shared two related scripts but no explicit request, so here's a quick orientation on what they are and how they relate — let me know what you'd like done with them.
+
+## What each file does
+
+**`llm_report_builder.py`** — a standalone, stdlib-only generator for a self-contained "Y2K corporate memo"-style HTML report. It reads the `llm` CLI's SQLite log (read-only via `mode=ro` URI), selects conversations whose **first prompt starts with `"U:"`**, marks each **PASS iff the last response contains both `"SUMMARY"` and `"SUGGEST"`**, and renders detailed cards: metadata table, token totals (guarded by column-existence check), extracted reasoning/thinking fields, the full first prompt with `<documents>`/`<document>`/`<source>` blocks folded into collapsible sections, and the full last response (truncated preview past 4,000 chars).
+
+**`weekly_dashboard.py`** — an importable module (also runnable standalone) producing a compact weekly digest of the same data: KPI tiles (sessions/pass/fail/turns/tokens), a shaded activity grid, per-day ✅/❌ counts, top-model table, and per-session cards with a 220-char snippet of the final response.
+
+## Shared logic (deliberately parallel)
+
+Both implement identical rules: the `GLOB 'U:*'` case-sensitive first-prompt selection (with `MIN(id)` assumed chronological), the same SUMMARY/SUGGEST status predicate, and the same shading formula (`lightness = 88 − 46·√(min(turns,50)/50)`, green/red hue). Both handle empty selections gracefully and open the DB read-only.
+
+## Observations / risks
+
+- **Schema assumptions diverge:** `weekly_dashboard.py` directly accesses `input_tokens`, `output_tokens`, and `model` columns and will raise `KeyError` if the schema lacks them, while the report builder checks `column_names` first.
+- **Duplication:** despite its docstring calling itself a "shared module," the dashboard's selection/status/shading logic is reimplemented rather than imported by the report builder — a refactor candidate.
+- **Minor robustness gaps in the dashboard:** it doesn't verify the fallback DB path exists (the report builder raises a clear error), doesn't `mkdir` the `--out` parent directory, and relies on `substr(datetime_utc,1,10)` string comparison for `--since` (fine for ISO timestamps, but implicit).
+- Both depend on `id` ordering reflecting conversational order; if rows were ever inserted out of order, "first prompt"/"last response" would be wrong.
+
+Would you like a deeper code review, a refactor to deduplicate the shared logic, unit tests, a specific bug fixed, or something else entirely?
+
+--- RESPONSE 748 (Model: glm-5.2-coding) ---
+# Performance Review: `llm_report_builder.py` & `weekly_dashboard.py`
+
+Both scripts share a common architecture flaw that dominates everything else: **they materialize the entire matched content of a multi-gigabyte SQLite database in Python memory, then build an in-memory HTML string on top of it.** Everything else is secondary. Below is the full analysis, ranked by severity, with semantics-preserving rewrites.
+
+---
+
+## 1. Cost model (so we can rank findings)
+
+Let:
+
+- **N** = total rows in `responses`
+- **C** = matching conversations
+- **T** = total turns across matched conversations (T ≈ N in the worst case for a "U:"-heavy user)
+- **B** = bytes of prompt/response/attachment payload per row (agent prompts with `<documents>` blobs are routinely 10–500 KB)
+- **E** ≈ 1.05–6× B after `html.escape` (worst case 6×: `"` → `&quot;`)
+
+Current report builder peak memory is roughly **S₁ (all first prompts, held by `fetchall` on the selection) + S₂ (all matched rows as dicts) + E (escaped HTML) + a transient copy of E from `"".join"`**. For a realistic agent DB (5,000 matched convs × 8 turns × 12 KB avg row): S₂ ≈ 480 MB, E ≈ 550 MB → **>1.5 GB RSS and swap death on a laptop**, all to produce a file whose visible content is first-prompt + last-response per conversation.
+
+---
+
+## 2. Findings, ranked
+
+| # | Severity | Location | Issue |
+|---|----------|----------|-------|
+| P0 | 🔴 | `llm_report_builder.py` L499–517, L304–308 | `SELECT *` on every row of every matched conversation; all content retained until `write_text`. Memory O(T·B); ~98% of fetched bytes are never rendered. |
+| P0 | 🔴 | `weekly_dashboard.py` L60–62 | `IN (…)` with one bind parameter per conversation. **Crashes** with "too many SQL variables" above 999 conversations on SQLite < 3.32 (default `SQLITE_MAX_VARIABLE_NUMBER=999`). A scalability *bug*, not just slowness. |
+| P0 | 🔴 | `weekly_dashboard.py` L60–62 | `SELECT * … WHERE conversation_id IN (…) ORDER BY id` is a planner landmine: plan (a) = rowid-ordered **full table scan** dragging every column of *unmatched* rows; plan (b) = index probes + **temp b-tree sort carrying full row payloads**, which spills multi-hundred-MB sorts to temp files. Either plan is bad. |
+| P1 | 🟠 | `llm_report_builder.py` L290–301, L499–502 | Selection query ships the **full first prompt of every matched conversation to Python** (`fetchall`), then `fetch_rows` fetches it *again*. First prompts are fetched twice; the first copy is used only for a redundant `startswith` guard duplicating the SQL `GLOB`. |
+| P1 | 🟠 | `llm_report_builder.py` L506–517 | `--since` filter runs **after** all rows of all conversations are fetched and materialized. All that I/O and allocation is thrown away for filtered-out conversations. |
+| P1 | 🟠 | `llm_report_builder.py` L176–212 | `collect_reasoning`: two full passes over rows × columns; `json.loads` on **every** JSON-ish column (multi-MB `attachments`/`options` payloads) even when no key can match; no early exit after the 25-entry cap. Hidden CPU hotspot. |
+| P2 | 🟡 | `llm_report_builder.py` L87–96, L57–84 | `render_first_prompt` calls `fold_prompt` and `non_doc_text`, each of which runs all 5 document regexes over the full prompt → **10 regex scans per prompt**; 5 suffice with shared spans. |
+| P2 | 🟡 | `llm_report_builder.py` L240–242, L372, L428, L438 | `pass_fail`/`conv_status` substring-scans the last response **3× per conversation** (grid, card header, meta table). |
+| P2 | 🟡 | `weekly_dashboard.py` L71 | `re.sub(r"\s+", " ", <entire last response>)` to produce a 220-char snippet. Regex over 100 KB+ to keep 220 bytes. |
+| P3 | ⚪ | both | No read-tuning PRAGMAs; whole-page string assembly; `rows` list retained through page build in the dashboard. |
+
+---
+
+## 3. Deep dive & rewrites — `llm_report_builder.py`
+
+### 3.1 The key structural insight
+
+The page needs, per conversation: **first prompt, last response, and small metadata.** It never renders intermediate prompts/responses — they're only touched by (a) token sums, (b) model set, (c) the reasoning scan. So split into a **cheap metadata pass in SQL, then a per-conversation streaming pass**, and write the HTML incrementally. Peak memory drops from O(total content) to O(largest single conversation).
+
+**Pass A — one aggregate query, ships only scalars:**
+
+```python
+def conv_headers(con, col_names, since_coarse=None):
+    tok_cols = ("input_tokens" in col_names and "output_tokens" in col_names)
+    tok_sql = ("SUM(COALESCE(input_tokens,0)), SUM(COALESCE(output_tokens,0)),"
+               if tok_cols else "")
+    since_sql = "AND substr(r1.datetime_utc,1,10) >= ?" if since_coarse else ""
+    args = (since_coarse,) if since_coarse else ()
+    q = f"""
+        WITH agg AS (
+            SELECT conversation_id, MIN(id) first_id, MAX(id) last_id,
+                   COUNT(*) turns, {tok_sql} group_concat(DISTINCT model) models
+            FROM responses GROUP BY conversation_id
+        )
+        SELECT a.conversation_id, a.first_id, a.last_id, a.turns,
+               {tok_sql and "a.in_tok, a.out_tok,"} a.models,
+               r1.datetime_utc AS first_dt, r2.datetime_utc AS last_dt,
+               (COALESCE(instr(r2.response,'SUMMARY'),0) > 0
+                AND COALESCE(instr(r2.response,'SUGGEST'),0) > 0) AS is_pass
+        FROM agg
+        JOIN responses r1 ON r1.id = a.first_id
+        JOIN responses r2 ON r2.id = a.last_id
+        WHERE r1.prompt GLOB 'U:*' {since_sql}
+        ORDER BY a.first_id
+    """
+    return con.execute(q, args).fetchall()
+```
+
+Notes:
+
+- `instr()` computes PASS/FAIL **inside SQLite** — no last-response text crosses the boundary for the grid, badges, or the stdout summary. `instr` is a case-sensitive substring search, byte-identical to `"SUMMARY" in resp`.
+- `GLOB 'U:*'` already guarantees the prefix; drop the Python guard and drop `r.prompt` from the projection entirely (fixes P1/first-bullet: no more double fetch of first prompts, and no `fetchall` holding them).
+- `group_concat(DISTINCT model)` skips NULLs just like the original `{r["model"] for r in rows if r.get("model")}`; re-split and `sorted()` in Python. (Caveat: model IDs containing commas would corrupt the split — llm model IDs don't contain commas; add a comment.)
+- **Honest I/O caveat:** `SUM(input_tokens)` still forces SQLite to *traverse* each row's record, and because `input_tokens`/`output_tokens` sit **after** `prompt` and `response` in llm's schema, reaching them means walking the overflow-page chains of the big columns. Page I/O is therefore near-identical to `SELECT *`; what you save is the **UTF-8 decode (~0.5–1 GB/s of pure CPU), millions of temporary Python string objects, and all retention**. That's still the dominant win on wall-clock and RSS.
+
+**Pass B — per-conversation streaming render:**
+
+```python
+def main():
+    ...
+    metas = conv_headers(con, cols)
+    if args.since:
+        # exact post-filter, identical expression to the old code
+        cutoff = parse_cutoff(args.since)
+        metas = [m for m in metas
+                 if (parse_dt_utc(m["first_dt"]) or datetime(1970, 1, 1)) >= cutoff]
+
+    passes = sum(1 for m in metas if m["is_pass"])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as fh:
+        fh.write(page_head(metas, cols, db_path, gen_time))   # letterhead + grid + legend
+        for i, m in enumerate(metas, 1):
+            fh.write(render_card(con, m, cols, i))            # fetches, renders, frees
+        fh.write(footer(gen_time))
+```
+
+`render_card` fetches the conversation's rows, keeps only what it needs (first prompt HTML, last response HTML, reasoning entries), and lets the rest be garbage-collected before the next conversation. The grid/status/summary all come from Pass A, so no pre-pass over content is needed. `is_pass` from SQL replaces all three redundant `pass_fail` recomputations (P2).
+
+The `--since` coarse+exact split is semantics-preserving: the SQL prefilter uses `cutoff − 1 day` (a stored datetime with a non-UTC offset can lag UTC by at most a day), then the *identical* Python expression from the old code runs as the exact filter. Offsets near midnight, NULLs, and unparseable values all behave exactly as before.
+
+### 3.2 `collect_reasoning`: prefilter + early exit, keep the two-pass order
+
+The 25-entry cap interacts with ordering: all name-column hits precede all JSON hits. Preserving that order requires two passes — but the rows of a *single* conversation are bounded, so keep them in memory for the conv only, and add two cheap guards:
+
+```python
+SPELL = re.compile(r"reason|think", re.I)   # raw-text prefilter
+
+def collect_reasoning(rows, col_names, cap=25):
+    lines, seen = [], set()
+    name_cols = [c for c in col_names if REASON_RE.search(c)]
+    # pass 1: matched column names
+    for row in rows:
+        for c in name_cols:
+            v = row.get(c)
+            if v is None or (isinstance(v, str) and not v.strip()):
+                continue
+            sv = display_value(v)
+            if (c, sv) not in seen:
+                seen.add((c, sv)); lines.append((c, sv))
+    if len(lines) >= cap:
+        return lines[:cap]                      # pass 2 cannot change the first cap
+    # pass 2: JSON scan — parse only when a match is even possible
+    for row in rows:
+        for c in col_names:
+            v = row.get(c)
+            if not isinstance(v, str):
+                continue
+            s = v.lstrip()                       # returns self if nothing stripped (CPython)
+            if not s or s[0] not in "{[":
+                continue
+            if not SPELL.search(v):              # C-level scan, no allocation
+                continue                         # no key can match → skip json.loads
+            try:
+                data = json.loads(v)
+            except Exception:
+                continue
+            if isinstance(data, (dict, list)):
+                out = []
+                _deep_reason(data, c, out)
+                for p, val in out:
+                    sv = display_value(val)
+                    if (p, sv) not in seen:
+                        seen.add((p, sv)); lines.append((p, sv))
+                        if len(lines) >= cap:
+                            return lines
+    return lines[:cap]
+```
+
+The prefilter is sound: `REASON_RE` only ever matches *parsed keys* whose text contains ASCII `reason`/`think`, and a JSON key containing those letters forces the same substring into the serialized source (ASCII letters are never mandatorily escaped). The one theoretical escape hatch is a producer emitting `\u0072eason`-style escapes for plain ASCII — vanishingly rare; if you need bit-exact parity, gate the prefilter behind a flag. For a DB where 5,000 conversations each carry a 200 KB `attachments` JSON with no reasoning keys, this alone removes ~1 GB of `json.loads` work.
+
+**Advanced option (mention, don't mandate):** if SQLite is built with JSON1, the whole pass-2 can be pushed down (`json_tree(r.attachments)` with `instr(r.attachments,'reason')>0 OR instr(r.attachments,'think')>0` as the gate), keeping parse CPU in C and shipping only truncated values. `display_value`'s exact formatting (`ensure_ascii=False`, `\r`→space) is harder to reproduce exactly, so I'd only take this after the diff-based acceptance test below.
+
+### 3.3 Share the doc-span computation (P2)
+
+`render_first_prompt` currently runs all five `find_doc_spans` regexes **twice** per prompt:
+
+```python
+def render_first_prompt(text):
+    if text is None:
+        text = ""
+    spans = find_doc_spans(text)          # compute once
+    nd = non_doc_text_spans(text, spans)  # both consumers take `spans`
+    if len(nd) > 4000:
+        return ('<pre class="content">' + esc(nd[:4000]) + '</pre>'
+                + '<details class="fulltext"><summary>Show full text</summary>'
+                + fold_prompt_spans(text, spans) + '</details>')
+    return fold_prompt_spans(text, spans)
+```
+
+I deliberately did **not** merge the five patterns into one alternation. The current code unions *overlapping* matches from independent patterns (which correctly handles malformed nesting like `<document><source>a</document>b</source>`); a single alternation consumes the first match and can miss an overlapping match that extends past it. Keep 5 `finditer`s, run them once — 5 scans instead of 10, zero behavioral risk.
+
+### 3.4 Connection tuning
+
+```python
+con = connect_ro(db_path)
+con.execute("PRAGMA cache_size=-65536")    # 64 MiB page cache
+con.execute("PRAGMA mmap_size=268435456")  # read-only mmap: overflow-page walks become memcpy
+con.execute("PRAGMA temp_store=MEMORY")    # if any sorter survives
+```
+
+Also verify the plan actually uses the conversation index — if llm's schema only indexes `(conversation_id)`, the implicit rowid still makes `GROUP BY conversation_id` + `MIN/MAX(id)` a **covering index-only scan**, and per-conv `ORDER BY id` comes free from index order. Confirm with `EXPLAIN QUERY PLAN` (look for `USING COVERING INDEX`, `SEARCH … USING INTEGER PRIMARY KEY`, absence of `USE TEMP B-TREE FOR ORDER BY`). And note that Python's `sqlite3` statement cache (default 128) makes the per-conv N+1 loop essentially free of re-preparation — the N+1 pattern is *not* worth churning here.
+
+---
+
+## 4. Deep dive & rewrites — `weekly_dashboard.py`
+
+### 4.1 Fix the variable-limit bug and the planner landmine in one move
+
+Chunk the `IN` list **and** stop asking for a global `ORDER BY id` over fat rows. The dashboard needs: per conv — turns, first datetime, first model, last response snippet, token sums; plus a global model histogram. None of that needs intermediate prompts or responses:
+
+```python
+def gather(db_path, since):
+    con = connect_ro(db_path)
+    try:
+        convs = [r[0] for r in con.execute(SEL_SQL, (since,))]
+        if not convs:
+            return [], None
+        meta, hist = {}, {}
+        for i in range(0, len(convs), 400):            # < 999-variable limit
+            ph = ",".join("?" * len(chunk := convs[i:i + 400]))
+            # per-conv aggregates (no payloads shipped)
+            for cid, n, it, ot in con.execute(
+                f"SELECT conversation_id, COUNT(*),"
+                f" SUM(COALESCE(input_tokens,0)), SUM(COALESCE(output_tokens,0))"
+                f" FROM responses WHERE conversation_id IN ({ph})"
+                f" GROUP BY conversation_id", chunk):
+                meta[cid] = {"turns": n, "in": it or 0, "out": ot or 0}
+            # model histogram: `model` sits BEFORE prompt/response in the record,
+            # so this read never traverses the big overflow chains — genuinely cheap.
+            for m, cnt in con.execute(
+                f"SELECT model, COUNT(*) FROM responses"
+                f" WHERE conversation_id IN ({ph}) GROUP BY model", chunk):
+                hist[m or ""] = hist.get(m or "", 0) + cnt
+            # endpoints only: one first row + one last row per conversation
+            for cid, dt, model, resp in con.execute(
+                f"SELECT r.conversation_id, r.datetime_utc, r.model, r2.response"
+                f" FROM (SELECT conversation_id, MIN(id) mn, MAX(id) mx"
+                f"       FROM responses WHERE conversation_id IN ({ph})"
+                f"       GROUP BY conversation_id) g"
+                f" JOIN responses r  ON r.id = g.mn"
+                f" JOIN responses r2 ON r2.id = g.mx", chunk):
+                meta[cid].update(first=(dt or "")[:16].replace("T", " "),
+                                 model=(model or "").split("/")[-1],
+                                 snip=snippet(resp), cid=cid)
+    finally:
+        con.close()
+    cards = sorted(meta.values(), key=lambda c: c["first"])
+    return cards, hist          # `rows` no longer escapes — memory freed here
+```
+
+This eliminates: the >999 crash, the full-table-scan-or-external-sort planner coin flip, all intermediate `SELECT *` payloads (the week's entire prompt corpus), and the retention of `rows` through `build_html` (compute `in_tok`/`out_tok`/models from `meta`+`hist` and pass those instead).
+
+Same honest caveat as §3.1 applies to the token SUMs (column order forces overflow-chain traversal server-side); the model histogram is the one query that's *actually* cheap end-to-end because `model` precedes the payload columns.
+
+### 4.2 Snippet: anchor, slice, then normalize
+
+```python
+WS_RUN = re.compile(r"\s+")
+FIRST_NS = re.compile(r"\S")
+
+def snippet(resp, limit=220, window=800):
+    if not resp:
+        return ""
+    m = FIRST_NS.search(resp)                  # C-level skip of leading whitespace
+    s = resp[m.start():m.start() + window] if m else ""
+    s = WS_RUN.sub(" ", s).strip()
+    return s[:limit] + ("…" if len(s) > limit else "")
+```
+
+Regex over ≤800 chars instead of the full response. Divergence from the original is confined to pathological inputs (e.g., a >580-char whitespace run inside the first 800 chars truncating the snippet early) — document it, or widen `window` if that bothers you.
+
+### 4.3 Minor
+
+- `int(r["input_tokens"] or 0) for r in rows if r["input_tokens"] is not None` — the `or 0` and the `is not None` guard are redundant with each other; gone entirely in the rewrite.
+- `resolve_db` here returns a possibly nonexistent fallback path instead of failing loudly (the report builder raises `SystemExit`) — a robustness inconsistency worth aligning, though it's not a perf issue.
+
+---
+
+## 5. Before / after
+
+| Dimension | Current (report builder) | After |
+|---|---|---|
+| Content bytes shipped to Python | O(T·B) — every row, every column | O(C·(first prompt + last response)) + per-conv streamed rows for reasoning |
+| Peak RSS | ≈ S₁ + S₂ + ~2E (GBs on an agent DB) | ≈ largest single conversation + output buffer |
+| Last-response scans for status | 3 per conv, in Python | 0 (SQL `instr`, reused for grid+cards+summary) |
+| First prompts fetched | 2× (selection + refetch), all retained | 1×, only during that conv's card render |
+| `--since` | post-fetch (all filtered work wasted) | coarse SQL pushdown + exact Python filter |
+| Reasoning scan | 2 passes, parses every JSON payload, no cap exit | 2 passes (order-preserving), prefiltered parses, early exit |
+| Doc-span regex | 10 scans/prompt | 5 scans/prompt |
+| Dashboard SQL | crash >999 convs; full scan or external sort | chunked; index-ordered; endpoint fetch only |
+| Dashboard memory | whole week's rows alive until file written | O(1) per conversation + histograms |
+
+## 6. Verification plan (acceptance gate)
+
+1. **Semantics:** run old and new on the same real DB; `diff` the HTML outputs must be byte-identical (modulo the two documented micro-divergences: snippet whitespace-run edge, `\u`-escaped-ASCII reasoning keys).
+2. **Plans:** `EXPLAIN QUERY PLAN` each new query; assert no `USE TEMP B-TREE FOR ORDER BY` on the big queries and covering-index usage for the GROUP BY.
+3. **Scale:** `/usr/bin/time -v` + `tracemalloc` on the largest available `logs.db`; target RSS < ~100 MB regardless of DB size, and wall-time dominated by the single aggregate pass.
+4. **Limits:** synthesize ≥1,000 matching conversations to prove the dashboard no longer hits the bind-parameter ceiling.
+
+## 7. Deliberately left alone
+
+- `html.escape` cost and final HTML size — inherent, since the full text is intentionally embedded in `<details>`; the 6× worst-case expansion is a property of the content.
+- The N+1 per-conversation loop (statement cache + index probes make it negligible next to content I/O).
+- Parallel rendering — the bottleneck is single-connection SQLite page reads; sharding read-only connections across processes adds complexity for little gain since the OS page cache is already shared.
+- Compression/external assets — excluded by the self-contained, no-network requirement.
+
+
+    </model_responses>
+    <iteration_history>
+        
+    </iteration_history>
+</arbiter_prompt>
+
+Analyze the candidate responses above according to your instructions and provide your synthesized output.

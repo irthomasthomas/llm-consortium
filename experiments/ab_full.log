@@ -1,0 +1,18 @@
+deepseek-v4-pro              xml     r0 ok=True rank=[748, 650]  63.5s out=3711
+deepseek-v4-pro              xml     r1 ok=True rank=[748, 650] 157.8s out=8894
+deepseek-v4-pro              xml     r2 ok=True rank=[748, 650] 125.0s out=7548
+deepseek-v4-pro              json    r0 ok=True rank=[748, 650] 104.5s out=5587
+deepseek-v4-pro              json    r1 ok=True rank=[748, 650] 127.2s out=7192
+deepseek-v4-pro              json    r2 ok=True rank=[748, 650]  88.2s out=5481
+kimi-k3-tee-chutes           xml     r0 ok=True rank=[748, 650] 213.6s out=6700
+kimi-k3-tee-chutes           xml     r1 ok=True rank=[748, 650] 266.2s out=8881
+kimi-k3-tee-chutes           xml     r2 ok=True rank=[748, 650] 188.2s out=6282
+kimi-k3-tee-chutes           json    r0 ok=True rank=[748, 650] 158.8s out=5019
+kimi-k3-tee-chutes           json    r1 ok=True rank=[748, 650] 133.6s out=3944
+kimi-k3-tee-chutes           json    r2 ok=True rank=[748, 650] 199.1s out=5110
+
+=== SUMMARY ===
+deepseek-v4-pro              json    ok 3/3  med_lat 104.5s  med_out_tok 5587
+deepseek-v4-pro              xml     ok 3/3  med_lat 125.0s  med_out_tok 7548
+kimi-k3-tee-chutes           json    ok 3/3  med_lat 158.8s  med_out_tok 5019
+kimi-k3-tee-chutes           xml     ok 3/3  med_lat 213.6s  med_out_tok 6700

@@ -20,10 +20,12 @@ Strategy:
 
 import concurrent.futures
 import logging
+
+
 import time
 from typing import List, Dict, Any, Optional
 
-from .base import ConsortiumStrategy
+from .base import ConsortiumStrategy, safe_prev_synthesis
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +79,7 @@ class CacheAwareStrategy(ConsortiumStrategy):
         if not self.orchestrator.iteration_history:
             return original_prompt
         
-        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        prev_synth = safe_prev_synthesis(self.orchestrator.iteration_history[-1].get("synthesis", {}))
         
         guidance = f"""Iteration Guidance:
 Please improve upon the previous iteration based on this synthesis:

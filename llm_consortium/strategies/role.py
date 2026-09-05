@@ -4,10 +4,12 @@ This strategy assigns different cognitive roles or personalities to model
 instances to prevent AI groupthink and ensure orthogonal perspectives.
 """
 
-from .base import ConsortiumStrategy
+from .base import ConsortiumStrategy, safe_prev_synthesis
 from typing import List, Dict, Any, Optional
 import random
 import logging
+
+
 
 logger = logging.getLogger(__name__)
 
@@ -95,7 +97,7 @@ class RoleStrategy(ConsortiumStrategy):
         if not self.orchestrator.iteration_history:
              return original_prompt
              
-        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        prev_synth = safe_prev_synthesis(self.orchestrator.iteration_history[-1].get("synthesis", {}))
         
         guidance = f"""Iteration Guidance:
 Please improve upon the previous iteration based on this synthesis:

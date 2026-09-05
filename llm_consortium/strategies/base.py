@@ -5,6 +5,23 @@ from typing import List, Dict, Any, TYPE_CHECKING, Optional
 if TYPE_CHECKING:
     from llm_consortium import ConsortiumOrchestrator, IterationContext # Use relative import if appropriate in final structure '. .'
 
+
+def safe_prev_synthesis(synthesis_data: Dict[str, Any]) -> str:
+    """Previous synthesis for member prompts. When the arbiter violated the
+    JSON contract (parse_success False) its raw text is meta-analysis, NOT an
+    answer — never feed it to members. Substitute evaluation guidance."""
+    if synthesis_data.get("parse_success", True) is False:
+        analysis = (synthesis_data.get("analysis") or "").strip()
+        refinement = synthesis_data.get("refinement_areas") or []
+        parts = []
+        if analysis and not analysis.startswith("Parse failure"):
+            parts.append(analysis)
+        if refinement:
+            parts.append("Refinement areas:\n" + "\n".join(f"- {a}" for a in refinement))
+        return parts[0] if parts else "[DEFERRED]"
+    return (synthesis_data.get("synthesis") or "").strip()
+
+
 class ConsortiumStrategy(ABC):
     """
     Abstract Base Class for defining consortium strategies.
@@ -157,7 +174,7 @@ class ConsortiumStrategy(ABC):
         if not self.orchestrator.iteration_history:
              return original_prompt
              
-        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        prev_synth = _safe_prev_synthesis(self.orchestrator.iteration_history[-1].get("synthesis", {}))
         
         guidance = f"""Iteration Guidance:\nPlease improve upon the previous iteration based on this synthesis:\n{prev_synth}"""
         

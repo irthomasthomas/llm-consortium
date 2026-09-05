@@ -1,0 +1,17 @@
+openrouter/inception/mercury-2 xml     r0 ok=True rank=[748, 650]   8.6s out=2097
+openrouter/inception/mercury-2 xml     r1 ok=True rank=[748, 650]  11.3s out=2489
+openrouter/inception/mercury-2 xml     r2 ok=True rank=[748, 650]   4.4s out=2155
+openrouter/inception/mercury-2 xml     r3 ok=True rank=[748, 650]   9.2s out=1960
+openrouter/inception/mercury-2 json    r0 ok=True rank=[748, 650]   4.6s out=1340
+openrouter/inception/mercury-2 json    r1 ok=True rank=[748, 650]   4.9s out=1026
+openrouter/inception/mercury-2 json    r2 ok=True rank=[748, 650]   4.0s out=1556
+openrouter/inception/mercury-2 json    r3 ok=True rank=[748, 650]   4.8s out=1289
+openrouter/inception/mercury-2 schema  r0 ok=True rank=[748, 650]   4.7s out=1331
+openrouter/inception/mercury-2 schema  r1 ok=True rank=[748, 650]   2.5s out=1063
+openrouter/inception/mercury-2 schema  r2 ok=True rank=[748, 650]   4.3s out=1087
+openrouter/inception/mercury-2 schema  r3 ok=True rank=[748, 650]   3.4s out=846
+
+=== SUMMARY ===
+openrouter/inception/mercury-2 json    ok 4/4  med_lat   4.7s  med_out_tok 1314.5
+openrouter/inception/mercury-2 schema  ok 4/4  med_lat   3.8s  med_out_tok 1075.0
+openrouter/inception/mercury-2 xml     ok 4/4  med_lat   8.9s  med_out_tok 2126.0

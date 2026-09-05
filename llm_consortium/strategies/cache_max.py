@@ -24,11 +24,14 @@ yields nothing; it never changes synthesis output.
 """
 
 import logging
+
+
 import threading
 import time
 from typing import List, Dict, Any, Optional
 
 from .cache_aware import CacheAwareStrategy, execute_cache_aware_responses
+from .base import safe_prev_synthesis
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +67,7 @@ class CacheMaxStrategy(CacheAwareStrategy):
         same-model arbiter reuses their warm prefix. Dynamic guidance is LAST."""
         guid = ""
         if self.orchestrator.iteration_history:
-            prev = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+            prev = safe_prev_synthesis(self.orchestrator.iteration_history[-1].get("synthesis", {}))
             guid = """
 
 Iteration %d guidance:

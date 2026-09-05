@@ -1,0 +1,28 @@
+kimi-k3-tee-chutes           xml     r0 ok=True rank=[748, 650] 180.4s out=6076
+kimi-k3-tee-chutes           json    r0 ok=True rank=[748, 650] 112.9s out=2737
+openrouter/inclusionai/ring-2.6-1t: SKIP 'Unknown model: openrouter/inclusionai/ring-2.6-1t'
+gpt-oss-120b-groq: SKIP 'Unknown model: gpt-oss-120b-groq'
+openrouter/inception/mercury-2 xml     r0 ok=True rank=[748, 650]   7.2s out=2209
+openrouter/inception/mercury-2 json    r0 ok=True rank=[748, 650]   3.6s out=1605
+openrouter/inception/mercury-2 schema  r0 ok=True rank=[748, 650]   3.2s out=1203
+deepseek-v4-flash            xml     r0 ok=True rank=[748, 650]  47.2s out=5455
+deepseek-v4-flash            json    r0 ok=True rank=[748, 650]  36.9s out=3847
+zenmux/inclusionai/ling-3.0-flash xml     r0 ok=True rank=[748, 650]  10.9s out=2373
+zenmux/inclusionai/ling-3.0-flash json    r0 ok=True rank=[748, 650]   7.7s out=1276
+glm-5.2-coding               xml     r0 ok=True rank=[748, 650]  70.8s out=6690
+glm-5.2-coding               json    r0 ok=True rank=[748, 650]  73.1s out=6072
+glm-5.2-coding               schema  r0 ok=True rank=[748, 650]  73.7s out=5856
+
+=== SUMMARY ===
+deepseek-v4-flash            json    ok 1/1  med_lat  36.9s  med_out_tok 3847
+deepseek-v4-flash            xml     ok 1/1  med_lat  47.2s  med_out_tok 5455
+glm-5.2-coding               json    ok 1/1  med_lat  73.1s  med_out_tok 6072
+glm-5.2-coding               schema  ok 1/1  med_lat  73.7s  med_out_tok 5856
+glm-5.2-coding               xml     ok 1/1  med_lat  70.8s  med_out_tok 6690
+kimi-k3-tee-chutes           json    ok 1/1  med_lat 112.9s  med_out_tok 2737
+kimi-k3-tee-chutes           xml     ok 1/1  med_lat 180.4s  med_out_tok 6076
+openrouter/inception/mercury-2 json    ok 1/1  med_lat   3.6s  med_out_tok 1605
+openrouter/inception/mercury-2 schema  ok 1/1  med_lat   3.2s  med_out_tok 1203
+openrouter/inception/mercury-2 xml     ok 1/1  med_lat   7.2s  med_out_tok 2209
+zenmux/inclusionai/ling-3.0-flash json    ok 1/1  med_lat   7.7s  med_out_tok 1276
+zenmux/inclusionai/ling-3.0-flash xml     ok 1/1  med_lat  10.9s  med_out_tok 2373

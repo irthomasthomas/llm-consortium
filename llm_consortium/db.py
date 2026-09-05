@@ -56,6 +56,7 @@ class DatabaseConnection:
                     run_id TEXT,
                     response_id TEXT,
                     role TEXT,
+                    strategy_role TEXT,
                     iteration INTEGER,
                     member_index INTEGER,
                     PRIMARY KEY (run_id, response_id),
@@ -89,6 +90,20 @@ class DatabaseConnection:
                     created_at TEXT DEFAULT CURRENT_TIMESTAMP
                 )
             """)
+        # --- Migrations for pre-existing databases ---
+        try:
+            cols = {c.name for c in db["arbiter_decisions"].columns}
+            if "parse_success" not in cols:
+                db["arbiter_decisions"].add_column("parse_success", bool)
+        except Exception as e:
+            logger.debug(f"parse_success migration skipped: {e}")
+        try:
+            cols = {c.name for c in db["consortium_members"].columns}
+            if "strategy_role" not in cols:
+                db["consortium_members"].add_column("strategy_role", str)
+        except Exception as e:
+            logger.debug(f"strategy_role migration skipped: {e}")
+
         return cls._thread_local.db
 
 def log_response(response, model: str, consortium_run_id: Optional[str] = None):
@@ -194,7 +209,8 @@ def save_consortium_member(
     response_id: str,
     role: str,
     iteration: int,
-    member_index: int
+    member_index: int,
+    strategy_role: Optional[str] = None,
 ):
     try:
         db = DatabaseConnection.get_connection()
@@ -202,6 +218,7 @@ def save_consortium_member(
             "run_id": run_id,
             "response_id": response_id,
             "role": role,
+            "strategy_role": strategy_role,
             "iteration": iteration,
             "member_index": member_index
         }, ignore=True)
@@ -221,15 +238,19 @@ def save_arbiter_decision(
     try:
         db = DatabaseConnection.get_connection()
         chosen_id = parsed_result.get('chosen_response_id')
+        confidence = parsed_result.get('confidence')
+        if confidence is None:
+            confidence = 0.0  # DB column is NOT NULL-semantics; None == parse failure
         db["arbiter_decisions"].insert({
             "run_id": run_id,
             "iteration": iteration,
             "response_id": response_id,
             "chosen_response_id": chosen_id,
-            "confidence": parsed_result.get('confidence', 0.0),
+            "confidence": confidence,
+            "parse_success": bool(parsed_result.get('parse_success', True)),
             "synthesis": parsed_result.get('synthesis', ''),
             "decision_json": json.dumps(parsed_result) if judging_method != 'rank' else None,
-            "ranking_json": json.dumps(parsed_result.get('ranking', [])) if judging_method == 'rank' else None,
+            "ranking_json": json.dumps(parsed_result.get('ranking', [])),
             "refinement_areas": json.dumps(parsed_result.get('refinement_areas', [])),
             "geometric_confidence": geometric_confidence,
             "centroid_vector": json.dumps(centroid_vector) if centroid_vector is not None else None,

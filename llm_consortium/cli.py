@@ -32,6 +32,86 @@ def _parse_strategy_params(strategy_params_list):
 
     return strategy_params
 
+
+def _sweep_stale_runs(db, stale_hours: int, dry_run: bool) -> None:
+    """Mark stale 'running' runs as 'aborted'. A run is stale when its last
+    recorded activity (arbiter decision or member response timestamp) is
+    older than stale_hours."""
+    rows = list(db.query(
+        "SELECT cr.id, cr.created_at, "
+        "MAX(COALESCE(r.datetime_utc, cr.created_at)) AS last_activity "
+        "FROM consortium_runs cr "
+        "LEFT JOIN arbiter_decisions ad ON ad.run_id = cr.id "
+        "LEFT JOIN responses r ON r.id = ad.response_id "
+        "WHERE cr.status = 'running' OR cr.status IS NULL "
+        "GROUP BY cr.id "
+        "HAVING last_activity < datetime('now', ?)",
+        [f"-{int(stale_hours)} hours"],
+    ))
+    if not rows:
+        click.echo("No stale 'running' runs found.")
+        return
+    mode = "DRY-RUN" if dry_run else "EXECUTE"
+    click.echo(f"[{mode}] {len(rows)} stale run(s) older than {stale_hours}h would be marked 'aborted':")
+    for row in rows[:20]:
+        click.echo(f"  {row['id']}  created={row['created_at']}  last_activity={row['last_activity']}")
+    if len(rows) > 20:
+        click.echo(f"  ... and {len(rows) - 20} more")
+    if dry_run:
+        click.echo("Dry run: no changes written. Re-run with --execute to apply.")
+        return
+    with db.conn:
+        db.conn.executemany(
+            "UPDATE consortium_runs SET status = 'aborted' WHERE id = ?",
+            [(row["id"],) for row in rows],
+        )
+    click.echo(f"Marked {len(rows)} run(s) as 'aborted'.")
+
+
+def _backfill_parse_success(db, dry_run: bool) -> None:
+    """Recompute parse_success for historical arbiter_decisions."""
+    cols = {c.name for c in db["arbiter_decisions"].columns} if "arbiter_decisions" in db.table_names() else set()
+    if "parse_success" not in cols:
+        db["arbiter_decisions"].add_column("parse_success", bool)
+    rows = list(db.query(
+        "SELECT run_id, iteration, decision_json, response_id, ranking_json, confidence FROM arbiter_decisions"
+    ))
+    updates = []
+    for row in rows:
+        dj = row.get("decision_json")
+        ok = None
+        if dj:
+            try:
+                d = json.loads(dj)
+                synth = d.get("synthesis")
+                rank = d.get("ranking")
+                if isinstance(rank, list) and rank and synth:
+                    ok = True
+                elif synth == row.get("response_id"):
+                    ok = False
+                else:
+                    ok = bool(synth and rank)
+            except Exception:
+                ok = None
+        if ok is None:
+            # legacy XML rows: rank_json presence + non-raw synthesis
+            rj = row.get("ranking_json")
+            ok = bool(rj and json.loads(rj))
+        updates.append((1 if ok else 0, row["run_id"], row["iteration"]))
+    mode = "DRY-RUN" if dry_run else "EXECUTE"
+    n_fail = sum(1 for u in updates if u[0] == 0)
+    click.echo(f"[{mode}] {len(updates)} decision(s) inspected; {n_fail} would be marked parse_success=0.")
+    if dry_run:
+        click.echo("Dry run: no changes written. Re-run with --execute to apply.")
+        return
+    with db.conn:
+        db.conn.executemany(
+            "UPDATE arbiter_decisions SET parse_success = ? WHERE run_id = ? AND iteration = ?",
+            updates,
+        )
+    click.echo(f"Updated {len(updates)} row(s).")
+
+
 @llm.hookimpl
 def register_commands(cli):
     @cli.group()
@@ -85,9 +165,9 @@ def register_commands(cli):
     )
     @click.option(
         "--judging-method",
-        type=click.Choice(["default", "rank", "rank-cot"], case_sensitive=False),
+        type=click.Choice(["default", "xml", "rank", "rank-cot"], case_sensitive=False),
         default="default",
-        help="Judging method for the arbiter (default=synthesis, rank=ranking, rank-cot=ranking with chain-of-thought evaluation)."
+        help="Judging method for the arbiter (default=JSON synthesis, xml=legacy tag contract, rank=ranking, rank-cot=ranking with chain-of-thought evaluation)."
     )
     @click.option(
         "--manual-context/--auto-context",
@@ -320,12 +400,27 @@ def register_commands(cli):
     @consortium.command(name="runs")
     @click.option("--limit", type=int, default=10, help="Maximum number of runs to show")
     @click.option("--since", help="Show runs since date (YYYY-MM-DD)")
-    def runs_command(limit, since):
+    @click.option("--sweep", is_flag=True, default=False,
+                  help="Find stale 'running' runs (no activity for --stale-hours) and mark them 'aborted'")
+    @click.option("--stale-hours", type=int, default=6,
+                  help="A run is stale when older than this many hours since last activity (default 6)")
+    @click.option("--dry-run", is_flag=True, default=False,
+                  help="With --sweep or --backfill-parse-success: report only, change nothing")
+    @click.option("--execute", is_flag=True, default=False,
+                  help="With --sweep: actually write the status changes")
+    @click.option("--backfill-parse-success", is_flag=True, default=False,
+                  help="Recompute parse_success for historical arbiter_decisions from stored JSON")
+    def runs_command(limit, since, sweep, stale_hours, dry_run, execute, backfill_parse_success):
         """List recent consortium executions"""
         db = DatabaseConnection.get_connection()
         if "consortium_runs" not in db.table_names():
             click.echo("No consortium runs found.")
             return
+
+        if sweep:
+            return _sweep_stale_runs(db, stale_hours, dry_run=dry_run or not execute)
+        if backfill_parse_success:
+            return _backfill_parse_success(db, dry_run=dry_run or not execute)
 
         query = "SELECT * FROM consortium_runs"
         params = []

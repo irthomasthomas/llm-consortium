@@ -4,9 +4,11 @@ This strategy progressively eliminates underperforming models based on
 their confidence scores across iterations.
 """
 
-from .base import ConsortiumStrategy
+from .base import ConsortiumStrategy, safe_prev_synthesis
 from typing import List, Dict, Any
 import logging
+
+
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from llm_consortium import IterationContext
@@ -151,7 +153,7 @@ class EliminationStrategy(ConsortiumStrategy):
         if not self.orchestrator.iteration_history:
              return original_prompt
              
-        prev_synth = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("synthesis", "")
+        prev_synth = safe_prev_synthesis(self.orchestrator.iteration_history[-1].get("synthesis", {}))
         refinement_areas = self.orchestrator.iteration_history[-1].get("synthesis", {}).get("refinement_areas", [])
         
         refinement_text = ""

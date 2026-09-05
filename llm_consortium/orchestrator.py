@@ -1,4 +1,5 @@
 import concurrent.futures
+import json
 import logging
 import re
 import uuid
@@ -47,6 +48,10 @@ def _read_rank_prompt() -> str:
 def _read_arbiter_system_prompt() -> str:
     return _read_prompt_file("arbiter_system.xml")
 
+
+def _read_arbiter_system_xml_prompt() -> str:
+    return _read_prompt_file("arbiter_system_xml.xml")
+
 def _read_rank_system_prompt() -> str:
     return _read_prompt_file("rank_system.xml")
 
@@ -55,6 +60,11 @@ def _read_rank_cot_system_prompt() -> str:
 
 def _read_rank_cot_prompt() -> str:
     return _read_prompt_file("rank_cot_prompt.xml")
+
+def _active_responses(parsed: Dict[str, Any], iteration: int) -> List[Dict[str, Any]]:
+    """Responses associated with a decision (used for geometry enrichment)."""
+    return parsed.get("_responses_for_geometry", []) or []
+
 
 class IterationContext:
     def __init__(self, synthesis: Dict[str, Any], model_responses: List[Dict[str, Any]]):
@@ -134,6 +144,19 @@ class ConsortiumOrchestrator:
         self.arbiter_conversation = None
         logger.info("Arbiter conversation reset.")
 
+    def _final_status(self, synthesis_dict: Dict[str, Any]) -> str:
+        """Terminal status for the run row. Explicit failure statuses set on
+        config during the loop (model_failure / embedding_failure) win."""
+        if self.config.status and self.config.status not in ("running", None):
+            return self.config.status
+        if not self.iteration_history:
+            return "model_failure"
+        if not synthesis_dict.get("synthesis"):
+            return "empty_synthesis"
+        if synthesis_dict.get("parse_success") is False:
+            return "arbiter_parse_failure"
+        return "success"
+
     def orchestrate(self, prompt: str, conversation_history: Optional[str] = None, consortium_id: Optional[str] = None) -> Dict[str, Any]:
         """Main entry point for orchestration - chooses method based on config."""
         self.consortium_id = consortium_id or str(uuid.uuid4())
@@ -196,8 +219,9 @@ class ConsortiumOrchestrator:
             # Unless synthesis was deferred (skip_intermediate_synthesis mode)
             synth_text = synthesis_result.get('synthesis', '')
             is_deferred = synth_text in ('', '[DEFERRED]')
-            if not synthesis_result.get('needs_iteration', False) and iteration >= self.minimum_iterations:
-                if synthesis_result.get('confidence', 0) >= self.confidence_threshold:
+            parse_ok = synthesis_result.get('parse_success', True)
+            if parse_ok and not synthesis_result.get('needs_iteration', False) and iteration >= self.minimum_iterations:
+                if (synthesis_result.get('confidence') or 0.0) >= self.confidence_threshold:
                     if is_deferred and iteration < self.max_iterations:
                         logger.info(f"Arbiter confident but synthesis deferred at iteration {iteration}, continuing for final synthesis")
                     else:
@@ -220,7 +244,7 @@ class ConsortiumOrchestrator:
             run_id=str(consortium_id),
             iteration_count=len(self.iteration_history),
             final_confidence=float(synthesis_dict.get("confidence", 0.0) or 0.0),
-            status=self.config.status if self.config.status != "running" else ("empty_synthesis" if not synthesis_dict.get("synthesis") else "success")
+            status=self._final_status(synthesis_dict)
         )
         
         return final_result
@@ -299,7 +323,11 @@ class ConsortiumOrchestrator:
             
             if hasattr(response, 'id') and self.consortium_id:
                 log_response(response, model_id, str(self.consortium_id))
-                save_consortium_member(str(self.consortium_id), str(response.id), model_id, iteration, instance)
+                role_label = self._member_role_label({"model": model_id, "instance": instance}) or None
+                save_consortium_member(
+                    str(self.consortium_id), str(response.id), model_id, iteration, instance,
+                    strategy_role=role_label,
+                )
             
             return result
         except Exception as e:
@@ -384,8 +412,9 @@ class ConsortiumOrchestrator:
             # Unless synthesis was deferred (skip_intermediate_synthesis mode)
             synth_text = synthesis_result.get('synthesis', '')
             is_deferred = synth_text in ('', '[DEFERRED]')
-            if not synthesis_result.get('needs_iteration', False) and iteration >= self.minimum_iterations:
-                if synthesis_result.get('confidence', 0) >= self.confidence_threshold:
+            parse_ok = synthesis_result.get('parse_success', True)
+            if parse_ok and not synthesis_result.get('needs_iteration', False) and iteration >= self.minimum_iterations:
+                if (synthesis_result.get('confidence') or 0.0) >= self.confidence_threshold:
                     if is_deferred and iteration < self.max_iterations:
                         logger.info(f"Arbiter confident but synthesis deferred at iteration {iteration}, continuing for final synthesis")
                     else:
@@ -408,7 +437,7 @@ class ConsortiumOrchestrator:
             run_id=str(consortium_id),
             iteration_count=len(self.iteration_history),
             final_confidence=float(synthesis_dict.get("confidence", 0.0) or 0.0),
-            status=self.config.status if self.config.status != "running" else ("empty_synthesis" if not synthesis_dict.get("synthesis") else "success")
+            status=self._final_status(synthesis_dict)
         )
         
         return final_result
@@ -489,7 +518,11 @@ class ConsortiumOrchestrator:
             
             if hasattr(response, 'id') and self.consortium_id:
                 log_response(response, model_id, str(self.consortium_id))
-                save_consortium_member(str(self.consortium_id), str(response.id), model_id, iteration, task["instance"])
+                role_label = self._member_role_label({"model": model_id, "instance": task["instance"]}) or None
+                save_consortium_member(
+                    str(self.consortium_id), str(response.id), model_id, iteration, task["instance"],
+                    strategy_role=role_label,
+                )
 
             return result
         except Exception as e:
@@ -507,6 +540,8 @@ class ConsortiumOrchestrator:
             return _read_rank_system_prompt() or _read_arbiter_system_prompt()
         if judging_method == "rank-cot":
             return _read_rank_cot_system_prompt() or _read_arbiter_system_prompt()
+        if judging_method == "xml":
+            return _read_arbiter_system_xml_prompt() or _read_arbiter_system_prompt()
         return _read_arbiter_system_prompt()
 
     def _resolve_arbiter_sys_prompt(self) -> Optional[str]:
@@ -517,6 +552,25 @@ class ConsortiumOrchestrator:
         if callable(hook):
             return hook(default=self.arbiter_system_prompt)
         return self.arbiter_system_prompt
+
+    def _member_role_label(self, response: Dict[str, Any]) -> str:
+        """Short strategy role label for a member, shown to the arbiter so it
+        judges role-conformant behaviour fairly."""
+        try:
+            model = response.get("model", "")
+            instance = response.get("instance", 0)
+            assigned = getattr(self.strategy, "iteration_state", {}).get("assigned_roles", {})
+            modifier = assigned.get(f"{model}-{instance}")
+            if not modifier:
+                return ""
+            # first non-empty line after the override header
+            for line in modifier.splitlines():
+                line = line.strip().strip("[]")
+                if line and "COGNITIVE ROLE OVERRIDE" not in line and "DIVERGENCE MATRIX" not in line:
+                    return line[:80]
+        except Exception:
+            pass
+        return ""
 
     def _synthesize_responses_manual(self, prompt: str, responses: List[Dict[str, Any]], 
                                    history: List[Dict[str, Any]], iteration: int) -> Dict[str, Any]:
@@ -531,55 +585,23 @@ class ConsortiumOrchestrator:
                   "ranking": [r.get("id") for r in responses],
                   "geometric_confidence": 0.0,
                   "centroid_vector": None,
+                  "parse_success": True,
              }
 
         arbiter_prompt = self._prepare_arbiter_prompt(prompt, responses, history, iteration=iteration)
         arbiter_model = llm.get_model(self.arbiter)
-        
-        sys_prompt = self._resolve_arbiter_sys_prompt()
-        response = arbiter_model.prompt(arbiter_prompt, system=sys_prompt, stream=False)
-        raw_arbiter_text = response.text()
+
+        parsed, raw_text, response, retried = self._synthesize_with_retry(
+            arbiter_model, arbiter_prompt, responses,
+            is_final_iteration=iteration >= getattr(self, "max_iterations", 3),
+        )
+        if retried:
+            parsed["repair_retried"] = True
         log_response(response, self.arbiter, self.consortium_id)
-        
         if hasattr(response, 'id') and self.consortium_id:
             save_consortium_member(str(self.consortium_id), str(response.id), 'arbiter', iteration, 0)
-
-        try:
-            if self.judging_method == 'rank':
-                parsed_result = self._parse_rank_response(raw_arbiter_text, responses)
-            elif self.judging_method == 'rank-cot':
-                parsed_result = self._parse_rank_cot_response(raw_arbiter_text, responses)
-            else:
-                parsed_result = self._parse_arbiter_response(raw_arbiter_text, responses=responses)
-            
-            parsed_result = self._enrich_with_geometry(parsed_result, responses)
-            parsed_result['raw_arbiter_response'] = raw_arbiter_text
-            
-            if hasattr(response, 'id') and self.consortium_id:
-                save_arbiter_decision(
-                    str(self.consortium_id),
-                    iteration,
-                    str(response.id),
-                    parsed_result,
-                    self.judging_method,
-                    geometric_confidence=parsed_result.get('geometric_confidence'),
-                    centroid_vector=parsed_result.get('centroid_vector'),
-                )
-            
-            return parsed_result
-        except Exception as e:
-            logger.error(f"Error parsing arbiter response: {e}")
-            return {
-                "synthesis": raw_arbiter_text,
-                "confidence": 0.0,
-                "analysis": "Parsing failed - see raw response",
-                "dissent": "",
-                "needs_iteration": False,
-                "refinement_areas": [],
-                "geometric_confidence": 0.0,
-                "centroid_vector": None,
-                "raw_arbiter_response": raw_arbiter_text
-            }
+        self._persist_decision(response, parsed, iteration, raw_text, responses)
+        return parsed
 
     def _synthesize_responses_automatic(self, prompt: str, valid_responses: List[Dict[str, Any]], 
                                       history: List[Dict[str, Any]], iteration: int) -> Dict[str, Any]:
@@ -592,59 +614,26 @@ class ConsortiumOrchestrator:
                   "ranking": [r.get("id") for r in valid_responses],
                   "geometric_confidence": 0.0,
                   "centroid_vector": None,
+                  "parse_success": True,
              }
 
         arbiter_model = llm.get_model(self.arbiter)
         arbiter_conversation = self._get_arbiter_conversation()
         if arbiter_conversation is None:
             arbiter_conversation = arbiter_model.conversation()
-        
-        arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history, iteration=iteration)
-        
-        sys_prompt = self._resolve_arbiter_sys_prompt()
-        arbiter_response = arbiter_conversation.prompt(arbiter_prompt, system=sys_prompt, stream=False)
-        raw_arbiter_text = arbiter_response.text()
-        log_response(arbiter_response, self.arbiter, self.consortium_id)
-        
-        if hasattr(arbiter_response, 'id') and self.consortium_id:
-            save_consortium_member(str(self.consortium_id), str(arbiter_response.id), 'arbiter', iteration, 0)
 
-        try:
-            if self.judging_method == 'rank':
-                parsed_result = self._parse_rank_response(raw_arbiter_text, valid_responses)
-            elif self.judging_method == 'rank-cot':
-                parsed_result = self._parse_rank_cot_response(raw_arbiter_text, valid_responses)
-            else:
-                parsed_result = self._parse_arbiter_response(raw_arbiter_text, responses=valid_responses)
-            
-            parsed_result = self._enrich_with_geometry(parsed_result, valid_responses)
-            parsed_result['raw_arbiter_response'] = raw_arbiter_text
-            
-            if hasattr(arbiter_response, 'id') and self.consortium_id:
-                save_arbiter_decision(
-                    str(self.consortium_id),
-                    iteration,
-                    str(arbiter_response.id),
-                    parsed_result,
-                    self.judging_method,
-                    geometric_confidence=parsed_result.get('geometric_confidence'),
-                    centroid_vector=parsed_result.get('centroid_vector'),
-                )
-            
-            return parsed_result
-        except Exception as e:
-            logger.error(f"Error parsing arbiter response: {e}")
-            return {
-                "synthesis": raw_arbiter_text,
-                "confidence": 0.0,
-                "analysis": "Parsing failed - see raw response",
-                "dissent": "",
-                "needs_iteration": False,
-                "refinement_areas": [],
-                "geometric_confidence": 0.0,
-                "centroid_vector": None,
-                "raw_arbiter_response": raw_arbiter_text
-            }
+        arbiter_prompt = self._prepare_arbiter_prompt(prompt, valid_responses, history, iteration=iteration)
+        parsed, raw_text, response, retried = self._synthesize_with_retry(
+            arbiter_model, arbiter_prompt, valid_responses, conversation=arbiter_conversation,
+            is_final_iteration=iteration >= getattr(self, "max_iterations", 3),
+        )
+        if retried:
+            parsed["repair_retried"] = True
+        log_response(response, self.arbiter, self.consortium_id)
+        if hasattr(response, 'id') and self.consortium_id:
+            save_consortium_member(str(self.consortium_id), str(response.id), 'arbiter', iteration, 0)
+        self._persist_decision(response, parsed, iteration, raw_text, valid_responses)
+        return parsed
 
     def _enrich_with_geometry(self, parsed_result: Dict[str, Any], responses: List[Dict[str, Any]]) -> Dict[str, Any]:
         embeddings = [response.get("embedding") for response in responses if response.get("embedding") is not None]
@@ -666,7 +655,11 @@ class ConsortiumOrchestrator:
             rid = r.get("id", i)
             model_name = r.get("model", "unknown")
             response_text = r.get("response", "")
-            formatted_responses += f"--- RESPONSE {rid} (Model: {model_name}) ---\n"
+            role_label = self._member_role_label(r)
+            formatted_responses += f"--- RESPONSE {rid} (Model: {model_name}"
+            if role_label:
+                formatted_responses += f" | Role: {role_label}"
+            formatted_responses += f") ---\n"
             formatted_responses += response_text + "\n\n"
 
         formatted_history = ""
@@ -716,20 +709,21 @@ class ConsortiumOrchestrator:
                     + "\n</iteration_history>\n\n"
                 )
                 if getattr(self, "arbiter_system_enabled", True):
-                    dynamic_suffix += "Analyze the responses and provide your synthesized output."
+                    if getattr(self, "judging_method", "default") == "xml":
+                        dynamic_suffix += "Analyze the responses and reply with the <synthesis_output> block."
+                    else:
+                        dynamic_suffix += "Analyze the responses and reply with the JSON decision object."
                 else:
-                    dynamic_suffix += (
-                        "Analyze the responses, then reply in EXACTLY this format:\n\n"
-                        + "<synthesis_output>\n"
-                        + "<analysis>[How you arrived at the synthesis]</analysis>\n"
-                        + "<dissent>[Notable dissenting views, if any]</dissent>\n"
-                        + "<synthesis>[Comprehensive synthesized answer; no meta-analysis]</synthesis>\n"
-                        + "<confidence>[0.0-1.0]</confidence>\n"
-                        + "<refinement_areas>[Areas needing refinement, if any]</refinement_areas>\n"
-                        + "<needs_iteration>[true|false]</needs_iteration>\n"
-                        + "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
-                        + "</synthesis_output>"
-                    )
+                    if getattr(self, "judging_method", "default") == "xml":
+                        dynamic_suffix += (
+                            "Analyze the responses, then reply ONLY with the <synthesis_output> block "
+                            "specified in your instructions."
+                        )
+                    else:
+                        dynamic_suffix += (
+                            "Analyze the responses, then reply ONLY with the JSON decision object "
+                            "specified in your instructions."
+                        )
             return static_prefix + dynamic_suffix
 
         # Build the formatted prompt
@@ -758,20 +752,18 @@ class ConsortiumOrchestrator:
         """Build the instruction block telling the arbiter to skip synthesis and provide evaluation + guidance."""
         per_model = getattr(self.config, 'per_model_guidance', True)
 
-        guidance_hint = ""
-        if per_model:
-            guidance_hint = """
-For each model, provide specific, actionable guidance in the <model_guidance> section.
-Format: <guidance model="ModelName" instance="0">[specific feedback]</guidance>"""
-
+        guidance_json = (
+            '\nFormat "model_guidance" as {"model-name_instance": "feedback"}.'
+            if per_model else ''
+        )
         return f"""**IMPORTANT - INTERMEDIATE EVALUATION MODE:**
-This is an intermediate iteration. Do NOT produce a full <synthesis>.
+This is an intermediate iteration. Do NOT produce a full "synthesis" value.
 Instead, focus on:
 1. Evaluating each response against the criteria.
 2. Providing specific guidance for how each model should improve.
-3. Set <needs_iteration>true</needs_iteration> if improvement is needed.
-4. Leave <synthesis> empty or write only "[DEFERRED]".
-5. You may still set <needs_iteration>false</needs_iteration> with a synthesis if you are already confident.{guidance_hint}"""
+3. Set "needs_iteration": true if improvement is needed.
+4. Set "synthesis" to "[DEFERRED]".
+5. You may still set "needs_iteration": false with a real synthesis if you are already confident.{guidance_json}"""
 
     def _build_skip_synthesis_suffix(self, formatted_responses: str, formatted_history: str,
                                      responses: List[Dict[str, Any]]) -> str:
@@ -786,77 +778,471 @@ Instead, focus on:
         if getattr(self.config, 'per_model_guidance', True):
             suffix += (
                 "This is an INTERMEDIATE iteration. Evaluate the responses and provide per-model guidance.\n"
-                "Reply in EXACTLY this format:\n\n"
-                "<synthesis_output>\n"
-                "<analysis>[Evaluation of each response]</analysis>\n"
-                "<dissent>[Notable dissenting views]</dissent>\n"
-                "<synthesis>[DEFERRED]</synthesis>\n"
-                "<confidence>[0.0-1.0]</confidence>\n"
-                "<refinement_areas>[Areas needing refinement]</refinement_areas>\n"
-                "<needs_iteration>true</needs_iteration>\n"
-                "<ranking>[<rank position=\"1\">ID</rank> ...]</ranking>\n"
-                "<model_guidance>[<guidance model=\"Name\" instance=\"0\">feedback</guidance>]</model_guidance>\n"
-                "</synthesis_output>"
+                "Reply ONLY with the JSON decision object; set \"synthesis\" to \"[DEFERRED]\" and "
+                "include \"model_guidance\" keyed by \"model-name_instance\"."
             )
         else:
             suffix += (
                 "This is an INTERMEDIATE iteration. Evaluate and provide guidance.\n"
-                "Reply in EXACTLY this format:\n\n"
-                "<synthesis_output>\n"
-                "<analysis>[Evaluation]</analysis>\n"
-                "<dissent>[Dissenting views]</dissent>\n"
-                "<synthesis>[DEFERRED]</synthesis>\n"
-                "<confidence>[0.0-1.0]</confidence>\n"
-                "<refinement_areas>[Refinement areas]</refinement_areas>\n"
-                "<needs_iteration>true</needs_iteration>\n"
-                "</synthesis_output>"
+                "Reply ONLY with the JSON decision object; set \"synthesis\" to \"[DEFERRED]\"."
             )
         return suffix
 
-    def _parse_model_guidance(self, text: str) -> Dict[str, str]:
-        """Parse <model_guidance> section into a dict keyed by 'model_instance'."""
-        guidance = {}
-        mg_match = re.search(r"<model_guidance>([\s\S]*?)</model_guidance>", text, re.IGNORECASE | re.DOTALL)
-        if not mg_match:
-            return guidance
-        
-        mg_content = mg_match.group(1)
-        # Parse <guidance model="Name" instance="0">text</guidance>
-        for m in re.finditer(r'<guidance\s+model="([^"]+)"\s+instance="(\d+)"\s*>([\s\S]*?)</guidance>', 
-                             mg_content, re.IGNORECASE | re.DOTALL):
-            model_name = m.group(1).strip()
-            instance = m.group(2).strip()
-            feedback = m.group(3).strip()
-            guidance[f"{model_name}_{instance}"] = feedback
-        
-        # Also support simpler <guidance model="Name">text</guidance> without instance
-        if not guidance:
-            for m in re.finditer(r'<guidance\s+model="([^"]+)"\s*>([\s\S]*?)</guidance>',
-                                 mg_content, re.IGNORECASE | re.DOTALL):
-                model_name = m.group(1).strip()
-                feedback = m.group(2).strip()
-                guidance[f"{model_name}_0"] = feedback
-        
-        return guidance
 
-    def _parse_rank_cot_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Parse a rank-cot arbiter response. Similar to default but with evaluation and model guidance."""
-        # Start with the standard parse
-        result = self._parse_arbiter_response(text, responses=responses)
-        
-        # Parse evaluation section
-        eval_match = re.search(r"<evaluation>([\s\S]*?)</evaluation>", text, re.IGNORECASE | re.DOTALL)
-        if eval_match:
-            result["evaluation"] = eval_match.group(1).strip()
+    # ------------------------------------------------------------------
+    # Arbiter invocation (JSON contract, schema-aware, one repair retry)
+    # ------------------------------------------------------------------
+    def _arbiter_json_schema(self) -> Optional[dict]:
+        if self.judging_method == "xml":
+            return None
+        if self.judging_method == "rank":
+            return self.RANK_JSON_SCHEMA
+        if self.judging_method == "rank-cot":
+            return self.RANK_COT_JSON_SCHEMA
+        return self.ARBITER_JSON_SCHEMA
+
+    def _call_arbiter(self, model, prompt: str, conversation=None):
+        """Call the arbiter; pass schema= when the backend supports it."""
+        schema = self._arbiter_json_schema()
+        kwargs = {"schema": schema} if schema and getattr(model, "supports_schema", False) else {}
+        if conversation is not None:
+            return conversation.prompt(prompt, system=self._resolve_arbiter_sys_prompt(), stream=False, **kwargs)
+        return model.prompt(prompt, system=self._resolve_arbiter_sys_prompt(), stream=False, **kwargs)
+
+    def _parse_arbiter_call(self, raw_text: str, responses, judging_method: Optional[str] = None) -> Dict[str, Any]:
+        jm = judging_method or self.judging_method
+        if jm == "xml":
+            return self._parse_arbiter_xml_response(raw_text, responses)
+        if jm == "rank":
+            return self._parse_rank_response(raw_text, responses)
+        if jm == "rank-cot":
+            return self._parse_rank_cot_response(raw_text, responses)
+        return self._parse_arbiter_response(raw_text, responses=responses)
+
+    def _degraded_acceptance(self, parsed: Dict[str, Any], missing: List[str], raw_text: str) -> Dict[str, Any]:
+        """Accept an envelope-incomplete arbiter reply whose synthesis content
+        is usable. Only used on the final iteration, after the repair retry."""
+        return {
+            "synthesis": parsed["degraded_synthesis"],
+            "confidence": None,
+            "analysis": f"Accepted degraded arbiter reply (missing: {', '.join(missing)}); one repair retry already attempted.",
+            "dissent": "",
+            "needs_iteration": False,
+            "refinement_areas": [],
+            "ranking": [],
+            "chosen_response_id": None,
+            "parse_success": True,
+            "degraded": True,
+            "missing_fields": missing,
+            "model_guidance": {},
+            "raw_arbiter_response": raw_text,
+        }
+
+    def _synthesize_with_retry(self, model, prompt: str, responses, conversation=None, is_final_iteration: bool = False):
+        """One arbiter call + at most one repair retry when the reply violates
+        the JSON contract. On the final iteration, if the retry still lacks the
+        envelope fields but carries a usable synthesis, accept it degraded
+        rather than discarding the arbiter's answer. Returns
+        (parsed, raw_text, response_obj, retried)."""
+        response = self._call_arbiter(model, prompt, conversation)
+        raw_text = response.text()
+        try:
+            parsed = self._parse_arbiter_call(raw_text, responses)
+        except Exception as e:
+            parsed = self._fallback_decision(raw_text, str(e))
+
+        if parsed.get("parse_success"):
+            return parsed, raw_text, response, False
+
+        detail = parsed.get("analysis", "unknown reason").replace("Parse failure: ", "")
+        missing = parsed.get("missing_fields") or []
+        logger.warning(
+            "Arbiter reply violated the JSON contract (%s); sending one targeted repair request.",
+            detail,
+        )
+        specifics = ""
+        if missing:
+            specifics = " Required fields are missing: " + ", ".join(f'"{m}"' for m in missing) + "."
+        jm = getattr(self, "judging_method", "default")
+        if jm == "xml":
+            format_fix = (
+                " Reply ONLY with the <synthesis_output> block: <analysis>, <dissent>, <synthesis>,"
+                " <confidence>, <refinement_areas>, <needs_iteration>, <ranking> with <rank position=\"1\">ID</rank> entries."
+                " The <synthesis> body must be the final answer to the original prompt itself —"
+                " it must not mention, compare, or review the candidate responses, their IDs, models, or rankings."
+            )
         else:
-            result["evaluation"] = ""
-        
-        # Parse per-model guidance
-        result["model_guidance"] = self._parse_model_guidance(text)
-        
+            format_fix = (
+                ' "synthesis" must be a single JSON string (serialize any structured answer into it), "confidence" a number 0.0-1.0,'
+                ' "ranking" the full list of response IDs as integers, "needs_iteration" a boolean.'
+                " The \"synthesis\" string must be the final answer to the original prompt itself —"
+                " it must not mention, compare, or review the candidate responses, their IDs, models, or rankings."
+                " Reply ONLY with the complete JSON decision object. No prose, no Markdown fences."
+            )
+        repair_prompt = (
+            prompt
+            + "\n\nYour previous reply did not use the required format (" + detail + ")."
+            + specifics
+            + format_fix
+        )
+        try:
+            response2 = self._call_arbiter(model, repair_prompt, conversation)
+            raw2 = response2.text()
+            try:
+                parsed2 = self._parse_arbiter_call(raw2, responses)
+            except Exception as e:
+                parsed2 = self._fallback_decision(raw2, str(e))
+            if parsed2.get("parse_success"):
+                return parsed2, raw2, response2, True
+            if is_final_iteration:
+                for cand, cand_raw in ((parsed2, raw2), (parsed, raw_text)):
+                    if cand.get("degraded_synthesis"):
+                        logger.warning(
+                            "Final-iteration arbiter reply still incomplete; accepting degraded synthesis (missing: %s).",
+                            ", ".join(cand.get("missing_fields") or []),
+                        )
+                        return self._degraded_acceptance(cand, cand.get("missing_fields") or ["envelope"], cand_raw), cand_raw, response2, True
+            return parsed2, raw2, response2, True
+        except Exception as e:
+            logger.error("Arbiter repair retry failed: %s", e)
+            if is_final_iteration and parsed.get("degraded_synthesis"):
+                return self._degraded_acceptance(parsed, parsed.get("missing_fields") or ["envelope"], raw_text), raw_text, response, True
+            return parsed, raw_text, response, True
+
+    def _persist_decision(self, response_obj, parsed: Dict[str, Any], iteration: int, raw_text: str, responses) -> None:
+        parsed = self._enrich_with_geometry(parsed, responses)
+        parsed.setdefault("raw_arbiter_response", raw_text)
+        if hasattr(response_obj, "id") and self.consortium_id:
+            save_arbiter_decision(
+                str(self.consortium_id),
+                iteration,
+                str(response_obj.id),
+                parsed,
+                self.judging_method,
+                geometric_confidence=parsed.get("geometric_confidence"),
+                centroid_vector=parsed.get("centroid_vector"),
+            )
+
+    # ------------------------------------------------------------------
+    # JSON arbiter contract
+    # ------------------------------------------------------------------
+    ARBITER_JSON_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "analysis": {"type": "string"},
+            "dissent": {"type": "string"},
+            "synthesis": {"type": "string"},
+            "confidence": {"type": "number"},
+            "refinement_areas": {"type": "array", "items": {"type": "string"}},
+            "needs_iteration": {"type": "boolean"},
+            "ranking": {"type": "array", "items": {"type": "integer"}},
+            "model_guidance": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["synthesis", "confidence", "needs_iteration", "ranking"],
+        "additionalProperties": False,
+    }
+    RANK_JSON_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "reasoning": {"type": "string"},
+            "ranking": {"type": "array", "items": {"type": "integer"}},
+        },
+        "required": ["ranking"],
+        "additionalProperties": False,
+    }
+    RANK_COT_JSON_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "evaluation": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "id": {"type": "integer"},
+                        "strengths": {"type": "string"},
+                        "weaknesses": {"type": "string"},
+                    },
+                    "required": ["id"],
+                    "additionalProperties": False,
+                },
+            },
+            "analysis": {"type": "string"},
+            "dissent": {"type": "string"},
+            "synthesis": {"type": "string"},
+            "confidence": {"type": "number"},
+            "refinement_areas": {"type": "array", "items": {"type": "string"}},
+            "needs_iteration": {"type": "boolean"},
+            "ranking": {"type": "array", "items": {"type": "integer"}},
+            "model_guidance": {
+                "type": "object",
+                "additionalProperties": {"type": "string"},
+            },
+        },
+        "required": ["synthesis", "confidence", "needs_iteration", "ranking"],
+        "additionalProperties": False,
+    }
+
+    @staticmethod
+    def _extract_json(text: str) -> Optional[dict]:
+        """Pull the first JSON object out of a response, tolerating fences,
+        prose wrappers, and trailing garbage."""
+        if not text:
+            return None
+        fenced = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        candidates = []
+        if fenced:
+            candidates.append(fenced.group(1))
+        # find outermost braces
+        start = text.find("{")
+        if start != -1:
+            depth = 0
+            for i, ch in enumerate(text[start:], start=start):
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        candidates.append(text[start:i + 1])
+                        break
+        candidates.append(text)
+        for c in candidates:
+            c = c.strip()
+            if not c.startswith("{"):
+                continue
+            try:
+                obj = json.loads(c)
+                if isinstance(obj, dict):
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                continue
+        # Last resort: salvage a reply truncated mid-JSON (backend output cap).
+        for c in candidates:
+            c = c.strip()
+            start = c.find("{")
+            if start == -1:
+                continue
+            repaired = ConsortiumOrchestrator._salvage_truncated_json(c[start:])
+            if repaired is None:
+                continue
+            try:
+                obj = json.loads(repaired)
+                if isinstance(obj, dict):
+                    logger.warning("Arbiter reply was truncated; salvaged a partial JSON object.")
+                    return obj
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return None
+
+    @staticmethod
+    def _scan_json_state(src: str):
+        """Single pass over src returning (stack, in_string, escaped)."""
+        stack = []
+        in_str = False
+        esc = False
+        for ch in src:
+            if in_str:
+                if esc:
+                    esc = False
+                elif ch == "\\":
+                    esc = True
+                elif ch == '"':
+                    in_str = False
+            elif ch == '"':
+                in_str = True
+            elif ch in "{[":
+                stack.append(ch)
+            elif ch in "}]":
+                if stack:
+                    stack.pop()
+        return stack, in_str, esc
+
+    @classmethod
+    def _salvage_truncated_json(cls, src: str) -> Optional[str]:
+        """Close an unterminated JSON document: balance quotes/brackets and
+        drop a dangling partial member. Returns a candidate string or None."""
+
+        def close(base: str) -> Optional[str]:
+            stack, in_str, esc = cls._scan_json_state(base)
+            patched = base
+            if in_str:
+                if esc and patched.endswith("\\"):
+                    patched = patched[:-1]
+                patched += '"'
+                stack, _, _ = cls._scan_json_state(patched)
+            for ch in reversed(stack):
+                patched = patched.rstrip()
+                if patched.endswith(","):
+                    patched = patched[:-1].rstrip()
+                patched += "}" if ch == "{" else "]"
+            return patched
+
+        if not src:
+            return None
+        candidates = [close(src)]
+        # Variant: drop a dangling `,"partial-key` member before closing.
+        trimmed = re.sub(r',\s*"(?:[^"\\]|\\.)*$|,\s*"[^"]*"?$', "", src.rstrip())
+        if trimmed != src:
+            candidates.append(close(trimmed))
+        for cand in candidates:
+            if not cand:
+                continue
+            try:
+                json.loads(cand)
+                return cand
+            except (json.JSONDecodeError, ValueError):
+                continue
+        return None
+
+    def _finalize_decision(self, obj: dict, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Normalize a parsed JSON decision dict into the canonical shape and
+        resolve ranking -> chosen_response_id."""
+        raw_synth = obj.get("synthesis")
+        if isinstance(raw_synth, (dict, list)):
+            # Task-format bleed-through: the arbiter nested the answer object
+            # under "synthesis". Serialize it so the user still gets it.
+            synthesis = json.dumps(raw_synth, ensure_ascii=False, indent=2)
+        else:
+            synthesis = str(raw_synth or "")
+        conf_raw = obj.get("confidence")
+        try:
+            confidence = float(conf_raw) if conf_raw is not None else None
+            if confidence is not None:
+                if confidence > 1.0:
+                    confidence = confidence / 100.0
+                confidence = max(0.0, min(1.0, confidence))
+        except (TypeError, ValueError):
+            confidence = None
+
+        ranking: List[int] = []
+        raw_ranking = obj.get("ranking")
+        if raw_ranking:
+            for entry in raw_ranking:
+                try:
+                    ranking.append(int(entry))
+                except (TypeError, ValueError):
+                    continue
+
+        needs_it = obj.get("needs_iteration")
+        needs_iteration = bool(needs_it) if isinstance(needs_it, bool) else str(needs_it).strip().lower() == "true"
+
+        refinement = obj.get("refinement_areas") or []
+        if isinstance(refinement, str):
+            refinement = [a.strip() for a in re.split(r"[\n;]|,\s(?=[A-Z])", refinement) if a.strip()]
+
+        result = {
+            "synthesis": synthesis,
+            "confidence": confidence,
+            "analysis": str(obj.get("analysis") or ""),
+            "dissent": str(obj.get("dissent") or ""),
+            "needs_iteration": needs_iteration,
+            "refinement_areas": refinement,
+            "ranking": ranking,
+            "chosen_response_id": None,
+            "parse_success": True,
+        }
+
+        if ranking and responses is not None:
+            top_id = ranking[0]
+            top = next((r for r in responses if r.get("id") == top_id), None)
+            if top:
+                result["chosen_response_id"] = top.get("response_id")
+
+        guidance = obj.get("model_guidance")
+        if isinstance(guidance, dict):
+            result["model_guidance"] = {str(k): str(v) for k, v in guidance.items()}
+        else:
+            result["model_guidance"] = {}
+
+        evaluation = obj.get("evaluation")
+        result["evaluation"] = evaluation if isinstance(evaluation, list) else []
+
         return result
 
-    def _parse_arbiter_response(self, text: str, is_final_iteration: bool = False, responses: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    @staticmethod
+    def _fallback_decision(text: str, reason: str, missing_fields: Optional[List[str]] = None,
+                           degraded_synthesis: Optional[str] = None) -> Dict[str, Any]:
+        """Raw-fallback decision shape. Never handed to the user as-is: callers
+        retry once, may accept it degraded on the final iteration, or substitute
+        the best member response downstream."""
+        out = {
+            "synthesis": text,
+            "confidence": None,
+            "analysis": f"Parse failure: {reason}",
+            "dissent": "",
+            "needs_iteration": False,
+            "refinement_areas": [],
+            "ranking": [],
+            "chosen_response_id": None,
+            "parse_success": False,
+            "model_guidance": {},
+            "raw_arbiter_response": text,
+        }
+        if missing_fields:
+            out["missing_fields"] = missing_fields
+        if degraded_synthesis:
+            out["degraded_synthesis"] = degraded_synthesis
+        return out
+
+    # Strong signals: any ONE indicates judge meta-commentary.
+    _META_LEAK_STRONG_CI = [
+        r"\bResponse\s+\d{1,6}\b",
+        r"\bresponse\s+IDs?\b",
+        r"\bmodel responses?\b",
+        r"\bcandidate responses?\b",
+    ]
+    # Shout-case judge headers ("VERDICT", "WINNER"): matched case-sensitively
+    # so ordinary prose using lowercase "winner" is never rejected.
+    _META_LEAK_UPPER = [
+        r"\bVERDICT\b",
+        r"\bWINNER\b",
+        r"\bSTRENGTHS\b",
+        r"\bWEAKNESSES\b",
+        r"\bRESPONSE\s+\d+\b",
+    ]
+    # Weak/ambiguous signals: require TWO OR MORE distinct hits.
+    _META_LEAK_WEAK_CI = [
+        r"\bconsortium\b",
+        r"\ball (?:three|responses|of the responses)\b",
+        r"\bthe three responses\b",
+        r"\bsynthes(?:is|es) of the\b",
+    ]
+
+    def _detect_meta_leak(self, synthesis: str) -> Optional[str]:
+        """Return a short reason string when the 'synthesis' text looks like
+        judge meta-commentary about the member responses rather than an
+        answer to the original prompt. Only strong signals count; we never
+        reject normal prose."""
+        if not synthesis:
+            return None
+        text = synthesis[:4000]
+        hits = []
+        for pat in self._META_LEAK_STRONG_CI:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                hits.append(m.group(0))
+        for pat in self._META_LEAK_UPPER:
+            m = re.search(pat, text)
+            if m:
+                hits.append(m.group(0))
+        if hits:
+            return "synthesis contains arbiter meta-commentary (" + ", ".join(sorted(set(hits))[:3]) + ")"
+        weak_hits = []
+        for pat in self._META_LEAK_WEAK_CI:
+            m = re.search(pat, text, re.IGNORECASE)
+            if m:
+                weak_hits.append(m.group(0))
+        if len(set(weak_hits)) >= 2:
+            return "synthesis contains arbiter meta-commentary (" + ", ".join(sorted(set(weak_hits))[:3]) + ")"
+        return None
+
+    def _parse_arbiter_xml_response(self, text: str, responses: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """Parse the legacy <synthesis_output> tag contract. Returns the
+        canonical decision shape; parse_success=False triggers the repair
+        retry, and on final iteration a usable <synthesis> can be accepted
+        degraded (via degraded_synthesis) without the envelope fields."""
         sections = {
             "synthesis": r"<synthesis>([\s\S]*?)</synthesis>",
             "confidence": r"<confidence>\s*([\d.]+)\s*</confidence>",
@@ -864,78 +1250,137 @@ Instead, focus on:
             "dissent": r"<dissent>([\s\S]*?)</dissent>",
             "needs_iteration": r"<needs_iteration>(true|false)</needs_iteration>",
             "refinement_areas": r"<refinement_areas>([\s\S]*?)</refinement_areas>",
-            "ranking": r"<ranking>([\s\S]*?)</ranking>"
+            "ranking": r"<ranking>([\s\S]*?)</ranking>",
         }
-
         result = {
             "synthesis": text,
-            "confidence": 0.0,
+            "confidence": None,
             "analysis": "",
-            "dissent": "",
+            "dissent":  "",
             "needs_iteration": False,
             "refinement_areas": [],
             "ranking": [],
-            "chosen_response_id": None
+            "chosen_response_id": None,
+            "parse_success": False,
+            "model_guidance": {},
+            "raw_arbiter_response": text,
         }
-
+        found_any = False
         for key, pattern in sections.items():
             match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
-            if match:
-                extracted_text = match.group(1).strip()
-                if key == "confidence":
-                    try:
-                        value = float(extracted_text)
-                        result[key] = value / 100 if value > 1 else value
-                    except (ValueError, TypeError):
-                        logger.warning(f"Could not parse confidence value: {extracted_text}")
-                elif key == "needs_iteration":
-                    result[key] = extracted_text.lower() == "true"
-                elif key == "refinement_areas":
-                    result[key] = [area.strip() for area in re.split(r'\s*<area>\s*|\s*</area>\s*', extracted_text) if area.strip()]
-                elif key == "ranking":
-                    ranked_ids_str = re.findall(r'<rank position="\d+">(\d+)</rank>', extracted_text, re.IGNORECASE)
-                    if ranked_ids_str:
-                        ranked_ids = [int(id_str) for id_str in ranked_ids_str]
-                        result["ranking"] = ranked_ids
-                        
-                        if responses is not None and ranked_ids:
-                            top_id = ranked_ids[0]
-                            top_response = next((r for r in responses if r.get('id') == top_id), None)
-                            if top_response:
-                                result["chosen_response_id"] = top_response.get('response_id')
-                else:
-                    result[key] = extracted_text
+            if not match:
+                continue
+            found_any = True
+            extracted_text = match.group(1).strip()
+            if key == "confidence":
+                try:
+                    value = float(extracted_text)
+                    result[key] = value / 100 if value > 1 else value
+                except (ValueError, TypeError):
+                    logger.warning("Could not parse confidence value: %s", extracted_text)
+            elif key == "needs_iteration":
+                result[key] = extracted_text.lower() == "true"
+            elif key == "refinement_areas":
+                result[key] = [a.strip() for a in re.split(r"\s*<area>\s*|\s*</area>\s*", extracted_text) if a.strip()]
+            elif key == "ranking":
+                ranked_ids_str = re.findall(r'<rank position="\d+">(\d+)</rank>', extracted_text, re.IGNORECASE)
+                if not ranked_ids_str:
+                    ranked_ids_str = re.findall(r"(\d+)", extracted_text)
+                if ranked_ids_str:
+                    ranked_ids = [int(x) for x in ranked_ids_str]
+                    result["ranking"] = ranked_ids
+                    if responses is not None:
+                        top_id = ranked_ids[0]
+                        top_response = next((r for r in responses if r.get("id") == top_id), None)
+                        if top_response:
+                            result["chosen_response_id"] = top_response.get("response_id")
+            else:
+                result[key] = extracted_text
 
-        # Parse per-model guidance if present
-        result["model_guidance"] = self._parse_model_guidance(text)
-
+        if not found_any:
+            return self._fallback_decision(text, "no <synthesis_output> tags found in arbiter reply")
+        # Envelope completeness: synthesis + ranking are mandatory.
+        has_synth = bool(result.get("synthesis")) and result["synthesis"] != text
+        missing = []
+        if not has_synth:
+            missing.append("synthesis")
+        if not result["ranking"]:
+            missing.append("ranking")
+        if missing:
+            reason = "XML reply missing required tags: " + ", ".join(f"<{m}>" for m in missing)
+            degraded = result["synthesis"] if has_synth else None
+            return self._fallback_decision(text, reason, missing_fields=missing, degraded_synthesis=degraded)
+        leak = self._detect_meta_leak(result["synthesis"])
+        if leak:
+            fb = self._fallback_decision(text, leak)
+            fb["ranking"] = result["ranking"]
+            fb["chosen_response_id"] = result["chosen_response_id"]
+            return fb
+        result["parse_success"] = True
         return result
 
+    def _parse_arbiter_response(self, text: str, is_final_iteration: bool = False, responses: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        obj = self._extract_json(text)
+        if obj is None:
+            return self._fallback_decision(text, "no JSON object found in arbiter reply")
+        missing = []
+        synth = obj.get("synthesis")
+        if not synth:
+            missing.append("synthesis")
+        if not isinstance(obj.get("ranking"), list) or not obj.get("ranking"):
+            missing.append("ranking")
+        type_note = ""
+        if synth is not None and not isinstance(synth, str):
+            type_note = ';"synthesis" must be a JSON string, not a nested object/array'
+        if missing:
+            reason = "JSON missing required fields: " + ", ".join(f'"{m}"' for m in missing)
+            reason += type_note
+            degraded = None
+            if synth:
+                degraded = json.dumps(synth, ensure_ascii=False, indent=2) if isinstance(synth, (dict, list)) else str(synth)
+                if degraded.strip() in ("", "[DEFERRED]"):
+                    degraded = None
+            return self._fallback_decision(text, reason, missing_fields=missing or ["synthesis_type"], degraded_synthesis=degraded)
+        decision = self._finalize_decision(obj, responses)
+        leak = self._detect_meta_leak(decision["synthesis"])
+        if leak:
+            fb = self._fallback_decision(text, leak)
+            fb["ranking"] = decision["ranking"]
+            fb["chosen_response_id"] = decision["chosen_response_id"]
+            return fb
+        return decision
+
     def _parse_rank_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
-        ranking_match = re.search(r"<ranking>([\s\S]*?)</ranking>", text, re.IGNORECASE | re.DOTALL)
-        if not ranking_match:
-            raise ValueError("Could not find a <ranking> tag.")
-        ranked_ids_str = re.findall(r'<rank position="\d+">(\d+)</rank>', ranking_match.group(1), re.IGNORECASE)
-        if not ranked_ids_str:
-            raise ValueError("Found <ranking> tag, but no valid <rank> tags inside.")
-        ranked_ids = [int(id_str) for id_str in ranked_ids_str]
+        obj = self._extract_json(text)
+        if obj is None or not obj.get("ranking"):
+            raise ValueError("Could not parse arbiter ranking from JSON reply.")
+        decision = self._finalize_decision(obj, responses)
+        ranked_ids = decision["ranking"]
         top_id = ranked_ids[0]
-        top_response = next((r for r in responses if r.get('id') == top_id), None)
+        top_response = next((r for r in responses if r.get("id") == top_id), None)
         if not top_response:
             raise ValueError(f"Top-ranked response ID {top_id} not found.")
-        
         return {
-            "synthesis": top_response.get('response', ''), 
-            "confidence": 1.0,
-            "analysis": f"Top: #{top_id} ({top_response.get('model', 'unknown')}). Ranking: {ranked_ids}",
-            "dissent": "", 
-            "needs_iteration": False, 
-            "refinement_areas": [], 
+            "synthesis": top_response.get("response", ""),
+            "confidence": decision["confidence"] if decision["confidence"] is not None else 1.0,
+            "analysis": f"Top: #{top_id} ({top_response.get('model', 'unknown')}). Reasoning: {decision['analysis'][:400]}",
+            "dissent": "",
+            "needs_iteration": False,
+            "refinement_areas": [],
             "ranking": ranked_ids,
-            "chosen_response_id": top_response.get('response_id')
+            "chosen_response_id": top_response.get("response_id"),
+            "parse_success": True,
         }
 
-def create_consortium(models: Any, arbiter: Optional[str] = None, 
+    def _parse_rank_cot_response(self, text: str, responses: List[Dict[str, Any]]) -> Dict[str, Any]:
+        obj = self._extract_json(text)
+        if obj is None or not obj.get("ranking"):
+            return self._fallback_decision(text, "no ranking in rank-cot JSON")
+        return self._finalize_decision(obj, responses)
+
+
+
+def create_consortium(models: Any, arbiter: Optional[str] = None,
                      confidence_threshold: float = 0.8, max_iterations: int = 3,
                      minimum_iterations: int = 1, system_prompt: Optional[str] = None,
                      judging_method: str = "default", manual_context: bool = False,
@@ -945,13 +1390,13 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
                      embedding_model: Optional[str] = None,
                      skip_intermediate_synthesis: bool = False,
                      per_model_guidance: bool = True) -> ConsortiumOrchestrator:
-    
+    """Convenience constructor used by tests and external callers."""
     from .models import parse_models
-    
+
     model_dict = models
     if isinstance(models, list):
-         model_dict = parse_models(models, 1)
-    
+        model_dict = parse_models(models, 1)
+
     config = ConsortiumConfig(
         models=model_dict,
         arbiter=arbiter,
@@ -966,6 +1411,6 @@ def create_consortium(models: Any, arbiter: Optional[str] = None,
         embedding_backend=embedding_backend,
         embedding_model=embedding_model,
         skip_intermediate_synthesis=skip_intermediate_synthesis,
-        per_model_guidance=per_model_guidance
+        per_model_guidance=per_model_guidance,
     )
     return ConsortiumOrchestrator(config, config_name=config_name)

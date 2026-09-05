@@ -1,6 +1,8 @@
-from .base import ConsortiumStrategy
+from .base import ConsortiumStrategy, safe_prev_synthesis
 from typing import List, Dict, Any
 import logging
+
+
 
 logger = logging.getLogger(__name__) # Use specific logger
 
@@ -40,7 +42,7 @@ class DefaultStrategy(ConsortiumStrategy):
              
         last_iteration = self.orchestrator.iteration_history[-1]
         synthesis_data = last_iteration.get("synthesis", {})
-        prev_synth = synthesis_data.get("synthesis", "")
+        prev_synth = safe_prev_synthesis(synthesis_data)
 
         # Check for per-model guidance (from rank-cot or skip_intermediate_synthesis)
         model_guidance = synthesis_data.get("model_guidance", {})

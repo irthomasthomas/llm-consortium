@@ -1,0 +1,39 @@
+## Candidate Analysis
+
+### Response 650 — better suited to the actual prompt
+
+The original prompt contains two source files but **no explicit request**. Response 650 correctly recognizes this ambiguity instead of assuming a task. It provides:
+
+- An accurate, concise summary of both scripts.
+- A clear explanation of their shared rules: `"U:"` first-prompt selection, `SUMMARY`/`SUGGEST` status, and the shading formula.
+- Useful observations about schema assumptions, duplicated logic, and robustness differences.
+- A direct offer to do a deeper review, refactor, tests, or fix a specific bug.
+
+This is the more appropriate first response for an ambiguous, code-only prompt.
+
+### Response 748 — technically strong but over-assuming
+
+Response 748 gives a deep performance/code review. Its strengths include:
+
+- Real scalability concerns: materializing entire result sets, first prompts being fetched twice, and `--since` being applied too late.
+- Concrete improvement ideas: aggregate SQL, chunked `IN (...)` lists, reusing document-span scans, prefiltering reasoning columns, and truncating before whitespace normalization.
+- A clear severity ranking and verification plan.
+
+However, it has notable weaknesses:
+
+1. **It assumes “performance review” was requested**, even though the original prompt did not ask for that.
+2. **It is very long** for an unstated task and may overwhelm the user.
+3. **It includes at least one concrete SQL bug**:
+   - The proposed `conv_headers` CTE uses:
+     ```sql
+     SUM(COALESCE(input_tokens,0)), SUM(COALESCE(output_tokens,0))
+     ```
+     without aliases, but the outer query references `a.in_tok` and `a.out_tok`.
+   - Those aliases would not exist, causing a SQL error.
+4. Some equivalence claims are slightly too strong, such as expecting byte-identical output despite acknowledging edge-case divergences.
+
+## Verdict
+
+**Response 650 is the preferred response** for the given original prompt because it appropriately handles the missing request and gives the user a clean, accurate orientation.
+
+Response 748 would be an excellent follow-up **after the user confirms they want a performance-focused review**, but it should not be the initial answer to an unstated task. If adopted, its proposed SQL and semantic-equivalence claims need correction and verification first.

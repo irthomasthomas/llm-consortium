@@ -148,6 +148,35 @@ class ConsortiumModel(llm.Model):
                 raise llm.ModelError(f"Failed to initialize consortium: {e}")
         return self._orchestrator
 
+    def _final_user_text(self, result: Dict[str, Any]) -> str:
+        """Pick the user-facing text. Parse failure => best member response."""
+        synth = result.get("synthesis", {}) or {}
+        parse_ok = synth.get("parse_success", True)
+        text = (synth.get("synthesis") or "").strip()
+        if parse_ok and text and text != "[DEFERRED]":
+            return text
+        # Fallback: ranking[0] member response, else first valid response.
+        iterations = result.get("iterations", []) or []
+        ranking = synth.get("ranking") or []
+        pool: List[Dict[str, Any]] = []
+        for it in iterations:
+            for r in it.get("model_responses", []):
+                if r.get("error") is None and r.get("response"):
+                    pool.append(r)
+        if ranking:
+            by_id = {r.get("id"): r for r in pool}
+            for rid in ranking:
+                if rid in by_id:
+                    logger.warning(
+                        "Arbiter parse failure; returning top-ranked member response (id=%s).",
+                        rid,
+                    )
+                    return by_id[rid]["response"]
+        if pool:
+            logger.warning("Arbiter parse failure; returning first member response.")
+            return pool[0]["response"]
+        return "Error: Arbiter and member responses unavailable."
+
     def execute(self, prompt, stream, response, conversation):
         consortium_id = str(uuid.uuid4())
         """Execute the consortium synchronously"""
@@ -195,33 +224,14 @@ class ConsortiumModel(llm.Model):
                 orchestrator = self.get_orchestrator()
                 result = orchestrator.orchestrate(prompt.prompt, conversation_history=conversation_history, consortium_id=consortium_id)
 
-            # --- BEGIN REVISED FALLBACK LOGIC ---
-            # Check result details from orchestrate
-            final_synthesis_data = result.get("synthesis", {}) # This dict contains parsed fields and raw_arbiter_response
-            raw_arbiter_response = final_synthesis_data.get("raw_arbiter_response", "")
-            parsed_synthesis = final_synthesis_data.get("synthesis", "") # This is the parsed <synthesis> content
-            analysis_text = final_synthesis_data.get("analysis", "")
-
-            # Determine if parsing failed or synthesis is insufficient
-            # Check 1: Explicit parsing failure message
-            # Check 2: Parsed synthesis is empty, but raw response is not (likely missing <synthesis> tag)
-            # Check 3: Parsed synthesis is exactly the raw response (parser fallback returned raw) AND no explicit success analysis
-            is_fallback = ("Parsing failed" in analysis_text) or \
-                          (not parsed_synthesis and raw_arbiter_response) or \
-                          (parsed_synthesis == raw_arbiter_response and raw_arbiter_response) # Simpler check: If parsed == raw and raw is not empty, it's likely the fallback.
-
-            if is_fallback:
-                 final_output_text = raw_arbiter_response if raw_arbiter_response else "Error: Arbiter response unavailable or empty."
-                 logger.warning("Arbiter response parsing failed or synthesis missing/empty. Returning raw arbiter response for logging.")
-            else:
-                 # Parsing seemed successful, return the clean synthesis
-                 final_output_text = parsed_synthesis
-
-            # Store the full result JSON in the response object for logging (existing code)
-            response.response_json = result # Ensure this is still done before returning
-            # Return the determined final text (clean synthesis or raw fallback)
+            # --- Final answer selection ---
+            # The user-facing text is ALWAYS either the arbiter's synthesized
+            # answer or, when the arbiter violated the JSON contract, the best
+            # MEMBER response (never the arbiter's meta-analysis).
+            final_synthesis_data = result.get("synthesis", {})
+            final_output_text = self._final_user_text(result)
+            response.response_json = result
             return final_output_text
-            # --- END REVISED FALLBACK LOGIC ---
 
         except Exception as e:
             logger.exception(f"Consortium execution failed: {e}")
